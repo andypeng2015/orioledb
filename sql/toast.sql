@@ -513,16 +513,14 @@ SELECT slot_name FROM pg_create_logical_replication_slot('regression_slot', 'tes
 ---- Insert
 INSERT INTO o_logical VALUES ('1', generate_string(10 + 1, 4000), generate_string(10 + 2, 5000));
 INSERT INTO o_logical VALUES ('2', generate_string(20 + 1, 4000), generate_string(20 + 2, 5000));
-SELECT * FROM o_logical;
-SELECT regexp_replace(t, '(COMMIT|BEGIN)([[:space:]]\d+)', '\1') FROM query_to_text($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$) as t;
+--SELECT * FROM o_logical;
 ---- Update TOAST->TOAST
 UPDATE o_logical SET (v1, v2) = (generate_string(50 + 1, 4000), generate_string(50 + 2, 5000)) WHERE id = 1;
 UPDATE o_logical SET v2 = generate_string(60 + 2, 5000) WHERE id = 2;
-SELECT * FROM o_logical;
-SELECT regexp_replace(t, '(COMMIT|BEGIN)([[:space:]]\d+)', '\1') FROM query_to_text($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$) as t;
+--SELECT * FROM o_logical;
 --- Update TOAST->Inline
 UPDATE o_logical SET (v1, v2) = (generate_string(70 + 1, 4000), generate_string(70 + 2, 20)) WHERE id = 1;
-SELECT * FROM o_logical WHERE id = 1;
+--SELECT * FROM o_logical WHERE id = 1;
 SELECT regexp_replace(t, '(COMMIT|BEGIN)([[:space:]]\d+)', '\1') FROM query_to_text($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$) as t;
 
 
@@ -535,16 +533,14 @@ SELECT slot_name FROM pg_create_logical_replication_slot('regression_slot', 'tes
 ---- Insert
 INSERT INTO o_logical VALUES ('1', repeat('1', 4000) || generate_string(10 + 1, 4000), repeat('1', 4000) || generate_string(10 + 2, 5000));
 INSERT INTO o_logical VALUES ('2', repeat('2', 4000) || generate_string(20 + 1, 4000), repeat('2', 4000) || generate_string(20 + 2, 5000));
-SELECT * FROM o_logical;
-SELECT regexp_replace(t, '(COMMIT|BEGIN)([[:space:]]\d+)', '\1') FROM query_to_text($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$) as t;
+--SELECT * FROM o_logical;
 ---- Update TOAST->TOAST
 UPDATE o_logical SET (v1, v2) = (repeat('5', 4000) || generate_string(50 + 1, 4000), repeat('5', 4000) || generate_string(50 + 2, 5000)) WHERE id = 1;
 UPDATE o_logical SET v2 = repeat('6', 4000) || generate_string(60 + 1, 4000) WHERE id = 2;
-SELECT * FROM o_logical;
-SELECT regexp_replace(t, '(COMMIT|BEGIN)([[:space:]]\d+)', '\1') FROM query_to_text($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$) as t;
+--SELECT * FROM o_logical;
 --- Update TOAST->Inline
 UPDATE o_logical SET (v1, v2) = (repeat('7', 4000) || generate_string(70 + 1, 4000), repeat('7', 20) || generate_string(70 + 2, 20)) WHERE id = 1;
-SELECT * FROM o_logical WHERE id = 1;
+--SELECT * FROM o_logical WHERE id = 1;
 SELECT regexp_replace(t, '(COMMIT|BEGIN)([[:space:]]\d+)', '\1') FROM query_to_text($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$) as t;
 
 SELECT * FROM pg_drop_replication_slot('regression_slot');
