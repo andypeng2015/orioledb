@@ -497,11 +497,13 @@ DROP TABLE if exists o_logical;
 SELECT pg_drop_replication_slot('regression_slot');
 
 -- Wrapper function, which converts result of SQL query to the text
-CREATE OR REPLACE FUNCTION query_to_text(sql TEXT, out result text)
+CREATE OR REPLACE FUNCTION query_to_text_filtered(sql TEXT, out result text)
         RETURNS SETOF TEXT AS $$
         BEGIN
                 FOR result IN EXECUTE sql LOOP
-                        RETURN NEXT;
+			IF result NOT LIKE '%COMMIT%' AND result NOT LIKE '%BEGIN%' THEN
+				RETURN NEXT;
+			END IF;
                 END LOOP;
         END $$
 LANGUAGE plpgsql;
@@ -521,7 +523,7 @@ UPDATE o_logical SET v2 = generate_string(60 + 2, 5000) WHERE id = 2;
 --- Update TOAST->Inline
 UPDATE o_logical SET (v1, v2) = (generate_string(70 + 1, 4000), generate_string(70 + 2, 20)) WHERE id = 1;
 --SELECT * FROM o_logical WHERE id = 1;
-SELECT regexp_replace(t, '(COMMIT|BEGIN)([[:space:]]\d+)', '\1') FROM query_to_text($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$) as t;
+SELECT query_to_text_filtered($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$);
 
 
 SELECT pg_drop_replication_slot('regression_slot');
@@ -541,7 +543,7 @@ UPDATE o_logical SET v2 = repeat('6', 4000) || generate_string(60 + 1, 4000) WHE
 --- Update TOAST->Inline
 UPDATE o_logical SET (v1, v2) = (repeat('7', 4000) || generate_string(70 + 1, 4000), repeat('7', 20) || generate_string(70 + 2, 20)) WHERE id = 1;
 --SELECT * FROM o_logical WHERE id = 1;
-SELECT regexp_replace(t, '(COMMIT|BEGIN)([[:space:]]\d+)', '\1') FROM query_to_text($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$) as t;
+SELECT query_to_text_filtered($$ SELECT data from pg_logical_slot_get_changes('regression_slot', NULL, NULL); $$);
 
 SELECT * FROM pg_drop_replication_slot('regression_slot');
 DROP TABLE o_logical;
