@@ -1699,7 +1699,7 @@ rebuild_indices(OTable *old_o_table, OTableDescr *old_descr,
 	double	   *index_tuples;
 	uint64		ctid;
 	CheckpointFileHeader *fileHeaders;
-	oIdxBuildState buildstate;
+	oIdxBuildState buildstate = {0};
 	oIdxSpool  *btspool = NULL;
 	SortCoordinate *coordinate = NULL;
 	S3TaskLocation maxLocation = 0,
