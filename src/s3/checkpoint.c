@@ -293,7 +293,7 @@ s3_backup_scan_dir(S3BackupState *state, const char *path,
 	char		pathbuf[MAXPGPATH * 2];
 	struct stat statbuf;
 	int64		size = 0;
-	const char *lastDir;		/* Split last dir from parent path. */
+	const char *lastDir = NULL; /* Split last dir from parent path. */
 	bool		isDbDir = false;	/* Does this directory contain relations? */
 
 	/*

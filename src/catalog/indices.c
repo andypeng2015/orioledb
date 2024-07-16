@@ -1415,7 +1415,7 @@ build_secondary_index(OTable *o_table, OTableDescr *descr, OIndexNumber ix_num,
 
 	/* Infrastructure for parallel build corresponds to _bt_spools_heapscan */
 	oIdxSpool  *btspool = NULL;
-	oIdxBuildState buildstate;
+	oIdxBuildState buildstate = {0};
 	SortCoordinate coordinate = NULL;
 	uint64		ctid;
 	double		heap_tuples;
