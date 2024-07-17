@@ -487,10 +487,13 @@ s3_backup_scan_dir(S3BackupState *state, const char *path,
 
 			rllen = readlink(pathbuf, linkpath, sizeof(linkpath));
 			if (rllen < 0)
+			{
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not read symbolic link \"%s\": %m",
 								pathbuf)));
+				return 0;		/* keep cppcheck quiet */
+			}
 			if (rllen >= sizeof(linkpath))
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
