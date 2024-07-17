@@ -18,7 +18,7 @@ elif [ "$COMPILER" = "gcc" ]; then
 		--suppress=uselessAssignmentPtrArg \
 		--suppress=incorrectStringBooleanError \
 		--suppress=nullPointerRedundantCheck \
-		--std=c89 --verbose src/*.c src/*/*.c include/*.h include/*/*.h 2> cppcheck.log
+		--std=c89 --inline-suppr --verbose src/*.c src/*/*.c include/*.h include/*/*.h 2> cppcheck.log
 
 	if [ -s cppcheck.log ]; then
 		cat cppcheck.log

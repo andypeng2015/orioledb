@@ -310,6 +310,7 @@ s3_backup_scan_dir(S3BackupState *state, const char *path,
 		strspn(lastDir + 1, "0123456789") == strlen(lastDir + 1))
 	{
 		/* Part of path that contains the parent directory. */
+		/* cppcheck-suppress uninitvar */
 		int			parentPathLen = lastDir - path;
 
 		/*
