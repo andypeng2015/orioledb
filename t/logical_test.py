@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import time
 import testgres
 import unittest
 
@@ -48,7 +49,8 @@ class LogicalTest(BaseTest):
 		node.start()  # start PostgreSQL
 		node.safe_psql(
 		    'postgres', "CREATE EXTENSION IF NOT EXISTS orioledb;\n"
-		    "CREATE TABLE data(id serial primary key, data text) USING orioledb;\n")
+		    "CREATE TABLE data(id serial primary key, data text) USING orioledb;\n"
+		)
 
 		node.safe_psql(
 		    'postgres',
@@ -142,11 +144,11 @@ class LogicalTest(BaseTest):
 
 			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
 			subscriber = testgres.get_new_node('subscriber',
-												port=self.getBasePort() + 1,
-												base_dir=baseDir)
+			                                   port=self.getBasePort() + 1,
+			                                   base_dir=baseDir)
 			subscriber.init(["--no-locale", "--encoding=UTF8"])
-			subscriber.append_conf(shared_preload_libraries = 'orioledb')
-			subscriber.append_conf(wal_level = 'logical')
+			subscriber.append_conf(shared_preload_libraries='orioledb')
+			subscriber.append_conf(wal_level='logical')
 
 			with subscriber.start() as subscriber:
 				create_sql = """
@@ -163,7 +165,7 @@ class LogicalTest(BaseTest):
 				publisher.safe_psql(create_sql)
 				subscriber.safe_psql(create_sql)
 
-				pub = publisher.publish('test_pub', tables = ['o_test1'])
+				pub = publisher.publish('test_pub', tables=['o_test1'])
 				sub = subscriber.subscribe(pub, 'test_sub')
 
 				with publisher.connect() as con1:
@@ -181,11 +183,15 @@ class LogicalTest(BaseTest):
 						con1.commit()
 						con2.commit()
 
-						con1.execute("UPDATE o_test1 SET data = 'YES' WHERE id = 1;")
-						con2.execute("UPDATE o_test2 SET data = 'YES' WHERE id = 1;")
+						con1.execute(
+						    "UPDATE o_test1 SET data = 'YES' WHERE id = 1;")
+						con2.execute(
+						    "UPDATE o_test2 SET data = 'YES' WHERE id = 1;")
 
-						con1.execute("UPDATE o_test1 SET data = 'NO' WHERE id = 4;")
-						con2.execute("UPDATE o_test2 SET data = 'NO' WHERE id = 4;")
+						con1.execute(
+						    "UPDATE o_test1 SET data = 'NO' WHERE id = 4;")
+						con2.execute(
+						    "UPDATE o_test2 SET data = 'NO' WHERE id = 4;")
 
 						con1.execute("DELETE FROM o_test1 WHERE id = 1;")
 						con2.execute("DELETE FROM o_test2 WHERE id = 2;")
@@ -195,11 +201,249 @@ class LogicalTest(BaseTest):
 						con1.commit()
 						con2.commit()
 
-					self.assertListEqual(publisher.execute('SELECT * FROM o_test1 ORDER BY id'), [(2, '2'), (4, 'NO')])
-					self.assertListEqual(publisher.execute('SELECT * FROM o_test2 ORDER BY id'), [(1, 'YES'), (3, '3')])
+					self.assertListEqual(
+					    publisher.execute('SELECT * FROM o_test1 ORDER BY id'),
+					    [(2, '2'), (4, 'NO')])
+					self.assertListEqual(
+					    publisher.execute('SELECT * FROM o_test2 ORDER BY id'),
+					    [(1, 'YES'), (3, '3')])
 
 					# wait until changes apply on subscriber and check them
 					sub.catchup()
 					# sub.poll_query_until("SELECT orioledb_recovery_synchronized();", expected=True)
-					self.assertListEqual(subscriber.execute('SELECT * FROM o_test1 ORDER BY id'), [(2, '2'), (4, 'NO')])
-					self.assertListEqual(subscriber.execute('SELECT * FROM o_test2 ORDER BY id'), [])
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY id'), [(2, '2'),
+					                                               (4, 'NO')])
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test2 ORDER BY id'), [])
+
+	def test_logical_subscription2(self):
+		with self.node as publisher:
+			publisher.start()
+
+			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
+			subscriber = testgres.get_new_node('subscriber',
+			                                   port=self.getBasePort() + 1,
+			                                   base_dir=baseDir)
+			subscriber.init(["--no-locale", "--encoding=UTF8"])
+			subscriber.append_conf(shared_preload_libraries='orioledb')
+			subscriber.append_conf(wal_level='logical')
+
+			with subscriber.start() as subscriber:
+				create_sql = """
+					CREATE EXTENSION IF NOT EXISTS orioledb;
+					CREATE TABLE o_test1 (
+						id int primary key,
+						data text
+					) USING orioledb;
+				"""
+				publisher.safe_psql(create_sql)
+				subscriber.safe_psql(create_sql)
+
+				pub = publisher.publish('test_pub')
+				sub = subscriber.subscribe(pub, 'test_sub')
+
+				with publisher.connect() as con1:
+					con1.execute("INSERT INTO o_test1 VALUES(1, '1');")
+					con1.execute("INSERT INTO o_test1 VALUES(2, '2');")
+					con1.execute("INSERT INTO o_test1 VALUES(3, '3');")
+					con1.execute("INSERT INTO o_test1 VALUES(4, '4');")
+					con1.execute(
+					    "UPDATE o_test1 SET data = 'YES' WHERE id = 1;")
+					con1.execute(
+					    "UPDATE o_test1 SET data = 'NO' WHERE id = 4;")
+					con1.execute("DELETE FROM o_test1 WHERE id = 1;")
+					con1.execute("DELETE FROM o_test1 WHERE id = 3;")
+					con1.commit()
+
+					self.assertListEqual(
+					    publisher.execute('SELECT * FROM o_test1 ORDER BY id'),
+					    [(2, '2'), (4, 'NO')])
+					sub.catchup()
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY id'), [(2, '2'),
+					                                               (4, 'NO')])
+
+					publisher.execute("TRUNCATE o_test1;")
+					self.assertListEqual(
+					    publisher.execute('SELECT * FROM o_test1 ORDER BY id'),
+					    [])
+					sub.catchup()
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY id'), [])
+
+					con1.execute("INSERT INTO o_test1 VALUES(1, '1');")
+					con1.execute("INSERT INTO o_test1 VALUES(2, '2');")
+					con1.execute("INSERT INTO o_test1 VALUES(3, '3');")
+					con1.execute("INSERT INTO o_test1 VALUES(4, '4');")
+					con1.execute(
+					    "UPDATE o_test1 SET data = 'YES' WHERE id = 1;")
+					con1.execute(
+					    "UPDATE o_test1 SET data = 'NO' WHERE id = 4;")
+					con1.execute("DELETE FROM o_test1 WHERE id = 2;")
+					con1.execute("DELETE FROM o_test1 WHERE id = 4;")
+					con1.commit()
+
+				self.assertListEqual(
+				    publisher.execute('SELECT * FROM o_test1 ORDER BY id'),
+				    [(1, 'YES'), (3, '3')])
+				sub.catchup()
+				self.assertListEqual(
+				    subscriber.execute('SELECT * FROM o_test1 ORDER BY id'),
+				    [(1, 'YES'), (3, '3')])
+
+	def test_logical_create_new_table(self):
+		with self.node as publisher:
+			publisher.start()
+
+			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
+			subscriber = testgres.get_new_node('subscriber',
+			                                   port=self.getBasePort() + 1,
+			                                   base_dir=baseDir)
+			subscriber.init(["--no-locale", "--encoding=UTF8"])
+			subscriber.append_conf(shared_preload_libraries='orioledb')
+			subscriber.append_conf(wal_level='logical')
+
+			with subscriber.start() as subscriber:
+				create_sql = """
+					CREATE EXTENSION IF NOT EXISTS orioledb;
+					CREATE TABLE o_test1 (
+						id int primary key,
+						data int
+					) USING orioledb;
+				"""
+				publisher.safe_psql(create_sql)
+				subscriber.safe_psql(create_sql)
+
+				pub = publisher.publish('test_pub')
+				sub = subscriber.subscribe(pub, 'test_sub')
+
+				with publisher.connect() as con1:
+					con1.execute("INSERT INTO o_test1 VALUES(1, '1');")
+					con1.execute("INSERT INTO o_test1 VALUES(2, '2');")
+					con1.execute("INSERT INTO o_test1 VALUES(3, '3');")
+					con1.execute("INSERT INTO o_test1 VALUES(4, '4');")
+					con1.execute(
+					    "UPDATE o_test1 SET data = '100' WHERE id = 1;")
+					con1.execute(
+					    "UPDATE o_test1 SET data = '500' WHERE id = 4;")
+					con1.execute("DELETE FROM o_test1 WHERE id = 1;")
+					con1.execute("DELETE FROM o_test1 WHERE id = 3;")
+
+					con1.execute("INSERT INTO o_test1 VALUES(11, '11');")
+					con1.execute("INSERT INTO o_test1 VALUES(12, '12');")
+					con1.execute("INSERT INTO o_test1 VALUES(13, '13');")
+					con1.execute("INSERT INTO o_test1 VALUES(14, '14');")
+
+					con1.execute(
+					    "UPDATE o_test1 SET data = '500' WHERE id = 14;")
+					con1.execute(
+					    "UPDATE o_test1 SET data = '100' WHERE id = 11;")
+					con1.execute("ALTER TABLE o_test1 ADD COLUMN val2 int;")
+					con1.execute("UPDATE o_test1 SET val2 = id + 1000;")
+					con1.execute("""
+						CREATE TABLE o_test2 (
+							id int primary key,
+							data int
+						) USING orioledb;
+					""")
+					con1.commit()
+
+					subscriber.execute(
+					    "ALTER TABLE o_test1 ADD COLUMN val2 char(4);")
+
+					self.assertListEqual(
+					    publisher.execute('SELECT * FROM o_test1 ORDER BY id'),
+					    [(2, 2, 1002), (4, 500, 1004), (11, 100, 1011),
+					     (12, 12, 1012), (13, 13, 1013), (14, 500, 1014)])
+					sub.catchup()
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY id'),
+					    [(2, 2, '1002'), (4, 500, '1004'), (11, 100, '1011'),
+					     (12, 12, '1012'), (13, 13, '1013'),
+					     (14, 500, '1014')])
+
+	def test_logical_drop_table(self):
+		with self.node as publisher:
+			publisher.append_conf(log_line_prefix=r'%m [%p] %q%a ')
+			publisher.start()
+
+			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
+			subscriber = testgres.get_new_node('subscriber',
+			                                   port=self.getBasePort() + 1,
+			                                   base_dir=baseDir)
+			subscriber.init(["--no-locale", "--encoding=UTF8"])
+			subscriber.append_conf(shared_preload_libraries='orioledb')
+			subscriber.append_conf(wal_level='logical')
+
+			with subscriber.start() as subscriber:
+				create_sql = """
+					CREATE EXTENSION IF NOT EXISTS orioledb;
+					CREATE TABLE o_test1 (
+						id int primary key,
+						data int
+					) USING orioledb;
+				"""
+				publisher.safe_psql(create_sql)
+				subscriber.safe_psql(create_sql)
+
+				pub = publisher.publish('test_pub')
+				sub = subscriber.subscribe(pub, 'test_sub')
+
+				with publisher.connect() as con1:
+					con1.execute("INSERT INTO o_test1 VALUES(1, '1');")
+					con1.execute("INSERT INTO o_test1 VALUES(2, '2');")
+					con1.execute("INSERT INTO o_test1 VALUES(3, '3');")
+					con1.execute("INSERT INTO o_test1 VALUES(4, '4');")
+					con1.execute(
+					    "UPDATE o_test1 SET data = '100' WHERE id = 1;")
+					con1.execute(
+					    "UPDATE o_test1 SET data = '500' WHERE id = 4;")
+					con1.execute("DELETE FROM o_test1 WHERE id = 1;")
+					con1.execute("DELETE FROM o_test1 WHERE id = 3;")
+
+					con1.execute("INSERT INTO o_test1 VALUES(11, '11');")
+					con1.execute("INSERT INTO o_test1 VALUES(12, '12');")
+					con1.execute("INSERT INTO o_test1 VALUES(13, '13');")
+					con1.execute("INSERT INTO o_test1 VALUES(14, '14');")
+
+					con1.execute(
+					    "UPDATE o_test1 SET data = '500' WHERE id = 14;")
+					con1.execute(
+					    "UPDATE o_test1 SET data = '100' WHERE id = 11;")
+					con1.execute("ALTER TABLE o_test1 ADD COLUMN val2 int;")
+					con1.execute("UPDATE o_test1 SET val2 = id + 1000;")
+					con1.execute("""
+						DROP TABLE o_test1;
+					""")
+					con1.commit()
+
+					publisher_dead = False
+					repeats = 5
+					for _ in range(0, repeats):
+						try:
+							if con1.execute("""
+								SELECT * FROM pg_stat_activity WHERE application_name = 'test_sub';
+							""") == []:
+								publisher_dead = True
+						except:
+							publisher_dead = True
+						time.sleep(0.1)
+
+					self.assertFalse(publisher_dead)
+
+					subscriber.execute(
+					    "ALTER TABLE o_test1 ADD COLUMN val2 char(4);")
+
+					sub.catchup()
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY id'),
+					    [(2, 2, '1002'), (4, 500, '1004'), (11, 100, '1011'),
+					     (12, 12, '1012'), (13, 13, '1013'),
+					     (14, 500, '1014')])
