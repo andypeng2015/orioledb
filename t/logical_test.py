@@ -11,7 +11,7 @@ import unittest
 from tempfile import mkdtemp
 from testgres.utils import get_pg_config
 
-from .base_test import BaseTest
+from .base_test import BaseTest, generate_string
 
 
 @staticmethod
@@ -370,7 +370,6 @@ class LogicalTest(BaseTest):
 
 	def test_logical_drop_table(self):
 		with self.node as publisher:
-			publisher.append_conf(log_line_prefix=r'%m [%p] %q%a ')
 			publisher.start()
 
 			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
@@ -439,6 +438,68 @@ class LogicalTest(BaseTest):
 
 					subscriber.execute(
 					    "ALTER TABLE o_test1 ADD COLUMN val2 char(4);")
+
+					sub.catchup()
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY id'),
+					    [(2, 2, '1002'), (4, 500, '1004'), (11, 100, '1011'),
+					     (12, 12, '1012'), (13, 13, '1013'),
+					     (14, 500, '1014')])
+
+	def test_logical_toast(self):
+		with self.node as publisher:
+			publisher.start()
+
+			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
+			subscriber = testgres.get_new_node('subscriber',
+			                                   port=self.getBasePort() + 1,
+			                                   base_dir=baseDir)
+			subscriber.init(["--no-locale", "--encoding=UTF8"])
+			subscriber.append_conf(shared_preload_libraries='orioledb')
+			subscriber.append_conf(wal_level='logical')
+
+			with subscriber.start() as subscriber:
+				create_sql = """
+					CREATE EXTENSION IF NOT EXISTS orioledb;
+					CREATE TABLE o_test1 (
+						id integer PRIMARY KEY,
+						v1 text,
+						v2 text,
+						v3 text
+					) USING orioledb;
+				"""
+
+				publisher.safe_psql(create_sql)
+				subscriber.safe_psql(create_sql)
+
+				pub = publisher.publish('test_pub')
+				sub = subscriber.subscribe(pub, 'test_sub')
+
+				with publisher.connect() as con1:
+					for i in range(0, 10):
+						baseIndex = i * 3 + 1
+						con1.execute(
+						    "INSERT INTO o_test1 VALUES (%d, '%s', '%s', '%s')"
+						    % (i + 1, generate_string(2500, baseIndex),
+						       generate_string(2500, baseIndex + 1),
+						       generate_string(2500, baseIndex + 2)))
+
+					con1.commit()
+
+					publisher_dead = False
+					repeats = 5
+					for _ in range(0, repeats):
+						try:
+							if con1.execute("""
+								SELECT * FROM pg_stat_activity WHERE application_name = 'test_sub';
+							""") == []:
+								publisher_dead = True
+						except:
+							publisher_dead = True
+						time.sleep(0.1)
+
+					self.assertFalse(publisher_dead)
 
 					sub.catchup()
 					self.assertListEqual(
