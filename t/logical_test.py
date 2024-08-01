@@ -508,3 +508,164 @@ class LogicalTest(BaseTest):
 					    [(2, 2, '1002'), (4, 500, '1004'), (11, 100, '1011'),
 					     (12, 12, '1012'), (13, 13, '1013'),
 					     (14, 500, '1014')])
+
+	def test_logical_index(self):
+		with self.node as publisher:
+			publisher.start()
+
+			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
+			subscriber = testgres.get_new_node('subscriber',
+			                                   port=self.getBasePort() + 1,
+			                                   base_dir=baseDir)
+			subscriber.init(["--no-locale", "--encoding=UTF8"])
+			subscriber.append_conf(shared_preload_libraries='orioledb')
+			subscriber.append_conf(wal_level='logical')
+
+			with subscriber.start() as subscriber:
+				create_sql = """
+					CREATE EXTENSION IF NOT EXISTS orioledb;
+					CREATE TABLE o_test1 (
+						id integer PRIMARY KEY,
+						val integer
+					) USING orioledb;
+					CREATE INDEX o_test1_idx ON o_test1 (val);
+				"""
+
+				publisher.safe_psql(create_sql)
+				subscriber.safe_psql(create_sql)
+
+				pub = publisher.publish('test_pub')
+				sub = subscriber.subscribe(pub, 'test_sub')
+
+				with publisher.connect() as con1:
+					con1.execute("INSERT INTO o_test1 VALUES(1, 20);")
+					con1.execute("INSERT INTO o_test1 VALUES(2, 17);")
+					con1.execute("INSERT INTO o_test1 VALUES(3, 19);")
+					con1.execute("INSERT INTO o_test1 VALUES(4, 18);")
+					con1.commit()
+
+					plan = publisher.execute("""
+						EXPLAIN (COSTS OFF, FORMAT JSON)
+							SELECT * FROM o_test1 ORDER BY val;
+					""")[0][0][0]["Plan"]
+					self.assertEqual('Custom Scan', plan["Node Type"])
+					self.assertEqual('o_test1', plan['Relation Name'])
+					self.assertListEqual(
+					    publisher.execute(
+					        'SELECT * FROM o_test1 ORDER BY val'), [(2, 17),
+					                                                (4, 18),
+					                                                (3, 19),
+					                                                (1, 20)])
+					sub.catchup()
+					plan = subscriber.execute("""
+						EXPLAIN (COSTS OFF, FORMAT JSON)
+							SELECT * FROM o_test1 ORDER BY val;
+					""")[0][0][0]["Plan"]
+					self.assertEqual('Custom Scan', plan["Node Type"])
+					self.assertEqual('o_test1', plan['Relation Name'])
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY val'), [(2, 17),
+					                                                (4, 18),
+					                                                (3, 19),
+					                                                (1, 20)])
+
+	def test_logical_rollback(self):
+		with self.node as publisher:
+			publisher.start()
+
+			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
+			subscriber = testgres.get_new_node('subscriber',
+			                                   port=self.getBasePort() + 1,
+			                                   base_dir=baseDir)
+			subscriber.init(["--no-locale", "--encoding=UTF8"])
+			subscriber.append_conf(shared_preload_libraries='orioledb')
+			subscriber.append_conf(wal_level='logical')
+
+			with subscriber.start() as subscriber:
+				create_sql = """
+					CREATE EXTENSION IF NOT EXISTS orioledb;
+					CREATE TABLE o_test1 (
+						id integer PRIMARY KEY,
+						val integer
+					) USING orioledb;
+				"""
+
+				publisher.safe_psql(create_sql)
+				subscriber.safe_psql(create_sql)
+
+				pub = publisher.publish('test_pub')
+				sub = subscriber.subscribe(pub, 'test_sub')
+
+				with publisher.connect() as con1:
+					con1.execute("INSERT INTO o_test1 VALUES(1, 20);")
+					con1.execute("INSERT INTO o_test1 VALUES(2, 17);")
+					con1.execute("INSERT INTO o_test1 VALUES(3, 19);")
+					con1.execute("INSERT INTO o_test1 VALUES(4, 18);")
+					con1.rollback()
+
+					self.assertListEqual(
+					    publisher.execute('SELECT * FROM o_test1 ORDER BY id'),
+					    [])
+					sub.catchup()
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY id'), [])
+
+	def test_logical_savepoint(self):
+		with self.node as publisher:
+			publisher.start()
+
+			baseDir = mkdtemp(prefix=self.myName + '_tgsb_')
+			subscriber = testgres.get_new_node('subscriber',
+			                                   port=self.getBasePort() + 1,
+			                                   base_dir=baseDir)
+			subscriber.init(["--no-locale", "--encoding=UTF8"])
+			subscriber.append_conf(shared_preload_libraries='orioledb')
+			subscriber.append_conf(wal_level='logical')
+
+			with subscriber.start() as subscriber:
+				create_sql = """
+					CREATE EXTENSION IF NOT EXISTS orioledb;
+					CREATE TABLE o_test1 (
+						id integer PRIMARY KEY,
+						val integer
+					) USING orioledb;
+				"""
+
+				publisher.safe_psql(create_sql)
+				subscriber.safe_psql(create_sql)
+
+				pub = publisher.publish('test_pub')
+				sub = subscriber.subscribe(pub, 'test_sub')
+
+				with publisher.connect() as con1:
+					con1.execute("INSERT INTO o_test1 VALUES(1, 20);")
+					con1.execute("INSERT INTO o_test1 VALUES(2, 17);")
+					con1.execute("SAVEPOINT s1;")
+					con1.execute("INSERT INTO o_test1 VALUES(3, 19);")
+					con1.execute("INSERT INTO o_test1 VALUES(4, 18);")
+					con1.execute("ROLLBACK TO SAVEPOINT s1;")
+					con1.commit()
+
+					publisher_dead = False
+					repeats = 5
+					for _ in range(0, repeats):
+						try:
+							if con1.execute("""
+								SELECT * FROM pg_stat_activity WHERE application_name = 'test_sub';
+							""") == []:
+								publisher_dead = True
+						except:
+							publisher_dead = True
+						time.sleep(0.1)
+
+					self.assertFalse(publisher_dead)
+
+					self.assertListEqual(
+					    publisher.execute('SELECT * FROM o_test1 ORDER BY id'),
+					    [(1, 20), (2, 17)])
+					sub.catchup()
+					self.assertListEqual(
+					    subscriber.execute(
+					        'SELECT * FROM o_test1 ORDER BY id'), [(1, 20), (2, 17)])
