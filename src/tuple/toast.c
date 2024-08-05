@@ -531,7 +531,6 @@ generic_toast_update_optional_wal(ToastAPI *api, void *key, Pointer data,
 	uint32		offset = 0,
 				length;
 	uint32		chunknum = 0;
-	bool		success = true;
 	BTreeModifyCallbackInfo callbackInfo = {
 		.waitCallback = NULL,
 		.modifyDeletedCallback = o_update_deleted_callback,
@@ -591,7 +590,7 @@ generic_toast_update_optional_wal(ToastAPI *api, void *key, Pointer data,
 	api->updateKey(key, chunknum, arg);
 	(void) generic_toast_delete_optional_wal(api, key, oxid, csn, arg, wal);
 
-	return success;
+	return true;
 }
 
 bool
