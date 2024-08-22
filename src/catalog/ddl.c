@@ -101,6 +101,8 @@ UndoLocation saved_undo_location = InvalidUndoLocation;
 static bool isTopLevel PG_USED_FOR_ASSERTS_ONLY = false;
 List	   *drop_index_list = NIL;
 static List *alter_type_exprs = NIL;
+Oid o_saved_relrewrite = InvalidOid;
+static ORelOids saved_oids;
 
 static void orioledb_utility_command(PlannedStmt *pstmt,
 									 const char *queryString,
@@ -1312,9 +1314,6 @@ orioledb_ExecutorRun_hook(QueryDesc *queryDesc,
 	saved_undo_location = prevSavedLocation;
 }
 
-Oid o_saved_relrewrite = InvalidOid;
-static ORelOids saved_oids;
-
 static void
 orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 							int subId, void *arg)
@@ -2066,6 +2065,9 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 				new_o_table = o_tables_get(new_oids);
 				Assert(new_o_table != NULL);
 
+				relation_close(rel, AccessShareLock);
+				CommandCounterIncrement();
+				rel = relation_open(objectId, AccessShareLock);
 				{
 					ListCell   *index;
 					Oid			indexOid;
@@ -2081,7 +2083,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 							o_define_index_validate(new_o_table->oids, ind, NULL, NULL);
 							relation_close(ind, AccessShareLock);
 							o_define_index(rel, ind, ind->rd_rel->oid,
-										   InvalidIndexNumber, NULL, false);
+										   InvalidIndexNumber, NULL);
 							closed = true;
 						}
 						if (!closed)
@@ -2170,7 +2172,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 					CommitSeqNo csn;
 					OXid		oxid;
 
-					descr = &tmp_descr;
+					descr = relation_get_descr(rel);
 
 					fill_current_oxid_csn(&oxid, &csn);
 					o_tbl_insert(descr, rel, primarySlot, oxid, csn);
@@ -2196,7 +2198,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 							o_define_index_validate(new_o_table->oids, ind, NULL, NULL);
 							relation_close(ind, AccessShareLock);
 							o_define_index(rel, ind, ind->rd_rel->oid,
-										   InvalidIndexNumber, NULL, false);
+										   InvalidIndexNumber, NULL);
 							closed = true;
 						}
 						if (!closed)
@@ -2327,7 +2329,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 						relation_close(rel, AccessShareLock);
 						closed = true;
 						o_define_index(tbl, rel, conform->conindid,
-									   InvalidIndexNumber, NULL, true);
+									   InvalidIndexNumber, NULL);
 					} else {
 						ix_num = o_find_ix_num_by_name(descr,
 													rel->rd_rel->relname.data);
@@ -2340,7 +2342,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 							relation_close(rel, AccessShareLock);
 							closed = true;
 							o_define_index(tbl, rel, conform->conindid,
-										   ix_num, NULL, true);
+										   ix_num, NULL);
 						}
 					}
 				}
