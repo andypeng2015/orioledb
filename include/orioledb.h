@@ -346,8 +346,8 @@ typedef struct OIndexDescr OIndexDescr;
 
 /* ddl.c */
 extern void orioledb_setup_ddl_hooks(void);
+extern void o_rewrite_cleanup(void);
 extern UndoLocation saved_undo_location;
-extern List *drop_index_list;
 extern List *reindex_list;
 
 /* scan.c */
