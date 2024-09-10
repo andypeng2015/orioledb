@@ -102,7 +102,7 @@ UndoLocation saved_undo_location = InvalidUndoLocation;
 static bool isTopLevel PG_USED_FOR_ASSERTS_ONLY = false;
 List	   *drop_index_list = NIL;
 static List *alter_type_exprs = NIL;
-Oid o_saved_relrewrite = InvalidOid;
+Oid			o_saved_relrewrite = InvalidOid;
 static ORelOids saved_oids;
 static bool in_rewrite = false;
 List	   *reindex_list = NIL;
@@ -692,9 +692,10 @@ check_multiple_tables(const char *objectName, ReindexObjectType objectKind, bool
 
 			foreach(index, RelationGetIndexList(tbl))
 			{
-				Oid indexOid = lfirst_oid(index);
-				Relation ind = relation_open(indexOid, AccessShareLock);
+				Oid			indexOid = lfirst_oid(index);
+				Relation	ind = relation_open(indexOid, AccessShareLock);
 				String	   *ix_name = makeString(pstrdup(ind->rd_rel->relname.data));
+
 				reindex_list = list_append_unique(reindex_list, ix_name);
 				relation_close(ind, AccessShareLock);
 			}
@@ -735,9 +736,10 @@ orioledb_utility_command(PlannedStmt *pstmt,
 	in_rewrite = false;
 	o_saved_relrewrite = InvalidOid;
 	savedDataQuery = NULL;
+
 	/*
-	 * reindex_list is expected to be allocated in PortalContext so it
-	 * isn't freed by us and pointer may be invalid there
+	 * reindex_list is expected to be allocated in PortalContext so it isn't
+	 * freed by us and pointer may be invalid there
 	 */
 	reindex_list = NIL;
 
@@ -927,8 +929,8 @@ orioledb_utility_command(PlannedStmt *pstmt,
 			case REINDEX_OBJECT_INDEX:
 				{
 					Oid			indOid = RangeVarGetRelid(stmt->relation,
-															AccessShareLock,
-															false);
+														  AccessShareLock,
+														  false);
 					Relation	iRel,
 								tbl;
 
@@ -951,8 +953,8 @@ orioledb_utility_command(PlannedStmt *pstmt,
 			case REINDEX_OBJECT_TABLE:
 				{
 					Oid			tblOid = RangeVarGetRelid(stmt->relation,
-															AccessShareLock,
-															false);
+														  AccessShareLock,
+														  false);
 					Relation	tbl;
 
 					tbl = relation_open(tblOid, AccessShareLock);
@@ -962,9 +964,10 @@ orioledb_utility_command(PlannedStmt *pstmt,
 
 						foreach(index, RelationGetIndexList(tbl))
 						{
-							Oid indexOid = lfirst_oid(index);
-							Relation ind = relation_open(indexOid, AccessShareLock);
+							Oid			indexOid = lfirst_oid(index);
+							Relation	ind = relation_open(indexOid, AccessShareLock);
 							String	   *ix_name = makeString(pstrdup(ind->rd_rel->relname.data));
+
 							reindex_list = list_append_unique(reindex_list, ix_name);
 							relation_close(ind, AccessShareLock);
 						}
@@ -982,7 +985,7 @@ orioledb_utility_command(PlannedStmt *pstmt,
 				break;
 			default:
 				elog(ERROR, "unrecognized object type: %d",
-						(int) stmt->kind);
+					 (int) stmt->kind);
 				break;
 		}
 	}
@@ -1017,6 +1020,7 @@ orioledb_utility_command(PlannedStmt *pstmt,
 	else if (IsA(pstmt->utilityStmt, RefreshMatViewStmt))
 	{
 		RefreshMatViewStmt *stmt = (RefreshMatViewStmt *) pstmt->utilityStmt;
+
 		if (!stmt->skipData)
 		{
 			Oid			matviewOid;
@@ -1053,8 +1057,9 @@ orioledb_utility_command(PlannedStmt *pstmt,
 		ListCell   *cell;
 
 		/*
-		* Open, exclusive-lock, and check all the explicitly-specified relations
-		*/
+		 * Open, exclusive-lock, and check all the explicitly-specified
+		 * relations
+		 */
 		foreach(cell, tstmt->relations)
 		{
 			RangeVar   *rv = lfirst(cell);
@@ -1446,7 +1451,7 @@ set_toast_oids_and_compress(Relation rel, Relation toast_rel)
 {
 	ORelOids	oids,
 				toastOids,
-				*treeOids;
+			   *treeOids;
 	int			numTreeOids;
 	OTable	   *o_table;
 	ORelOptions *options = (ORelOptions *) rel->rd_options;
@@ -1497,12 +1502,12 @@ set_toast_oids_and_compress(Relation rel, Relation toast_rel)
 	if (rel->rd_rel->relpersistence !=
 		RELPERSISTENCE_PERMANENT &&
 		(OCompressIsValid(compress) ||
-			OCompressIsValid(primary_compress) ||
-			OCompressIsValid(toast_compress)))
+		 OCompressIsValid(primary_compress) ||
+		 OCompressIsValid(toast_compress)))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					errmsg("temp and unlogged orioledb tables does not "
+				 errmsg("temp and unlogged orioledb tables does not "
 						"support compression options")));
 	}
 
@@ -1549,7 +1554,7 @@ create_o_table_for_rel(Relation rel)
 
 	o_tables_rel_meta_lock(rel);
 	o_table = o_table_tableam_create(oids, tupdesc,
-									rel->rd_rel->relpersistence);
+									 rel->rd_rel->relpersistence);
 	o_opclass_cache_add_table(o_table);
 
 	o_sys_cache_set_datoid_lsn(&cur_lsn, &datoid);
@@ -1562,11 +1567,11 @@ create_o_table_for_rel(Relation rel)
 
 typedef struct
 {
-	DestReceiver 	pub;			/* publicly-known function pointers */
-	Relation		rel;
-	OTableDescr	   *descr;
-	CommitSeqNo		csn;
-	OXid			oxid;
+	DestReceiver pub;			/* publicly-known function pointers */
+	Relation	rel;
+	OTableDescr *descr;
+	CommitSeqNo csn;
+	OXid		oxid;
 } DR_transientrel;
 
 /*
@@ -1630,7 +1635,7 @@ CreateOrioledbDestReceiver(Relation rel)
 }
 
 static void
-drop_table(ORelOids	oids)
+drop_table(ORelOids oids)
 {
 	CommitSeqNo csn;
 	OXid		oxid;
@@ -1744,18 +1749,18 @@ rewrite_table(Relation rel, OTable *old_o_table, OTable *new_o_table)
 
 		for (int i = 0; i < old_slot->tts_tupleDescriptor->natts; i++)
 		{
-			Node *expr = NULL;
+			Node	   *expr = NULL;
 			Form_pg_attribute attr = &old_slot->tts_tupleDescriptor->attrs[i];
 
-			ListCell *lc;
+			ListCell   *lc;
 
-			foreach (lc, alter_type_exprs)
+			foreach(lc, alter_type_exprs)
 			{
-				AttrNumber attnum = intVal(linitial((List *)lfirst(lc)));
+				AttrNumber	attnum = intVal(linitial((List *) lfirst(lc)));
 
 				if (attnum == i + 1)
 				{
-					expr = (Node *)lsecond((List *)lfirst(lc));
+					expr = (Node *) lsecond((List *) lfirst(lc));
 					break;
 				}
 			}
@@ -1764,13 +1769,15 @@ rewrite_table(Relation rel, OTable *old_o_table, OTable *new_o_table)
 				i >= primary_init_nfields &&
 				old_slot->tts_isnull[i])
 			{
-				Node *defaultexpr = build_column_default(rel, i + 1);
+				Node	   *defaultexpr = build_column_default(rel, i + 1);
+
 				expr = defaultexpr;
 			}
 
 			if (!expr && attr->attgenerated && old_slot->tts_isnull[i])
 			{
-				Node *defaultexpr = build_column_default(rel, i + 1);
+				Node	   *defaultexpr = build_column_default(rel, i + 1);
+
 				expr = defaultexpr;
 			}
 
@@ -1915,6 +1922,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 				!OidIsValid(rel->rd_rel->relrewrite))
 			{
 				ORelOids	oids;
+
 				ORelOidsSetFromRel(oids, rel);
 				Assert(relation_get_descr(rel) != NULL);
 				drop_table(oids);
@@ -2131,15 +2139,17 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 				{
 					create_o_table_for_rel(rel);
 				}
-				else {
+				else
+				{
 					Relation	old_rel = relation_open(rel->rd_rel->relrewrite, AccessShareLock);
+
 					o_saved_relrewrite = rel->rd_rel->relrewrite;
 					ORelOidsSetFromRel(saved_oids, old_rel);
 					relation_close(old_rel, AccessShareLock);
 				}
 			}
 			else if ((rel->rd_rel->relkind == RELKIND_TOASTVALUE) &&
-					 (subId == 0) && !OidIsValid(rel->rd_rel->relrewrite) )
+					 (subId == 0) && !OidIsValid(rel->rd_rel->relrewrite))
 			{
 				Oid			tbl_oid;
 				Relation	tbl = NULL;
@@ -2179,7 +2189,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 					}
 					else
 					{
-						int ix_num = InvalidIndexNumber;
+						int			ix_num = InvalidIndexNumber;
 						int			i;
 
 						for (i = 0; i < o_table->nindices; i++)
@@ -2240,7 +2250,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 				attr = &rel->rd_att->attrs[subId - 1];
 				orioledb_attr_to_field(field, attr);
 
-				// TODO: Probably use CheckIndexCompatible here
+				/* TODO: Probably use CheckIndexCompatible here */
 				changed = old_field.typid != field->typid ||
 					old_field.collation != field->collation;
 
@@ -2314,7 +2324,7 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 					attr = &rel->rd_att->attrs[subId - 1];
 					orioledb_attr_to_field(field, attr);
 
-					// TODO: Probably use CheckIndexCompatible here
+					/* TODO: Probably use CheckIndexCompatible here */
 					changed = old_field.typid != field->typid ||
 						old_field.collation != field->collation;
 
