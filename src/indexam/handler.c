@@ -1165,115 +1165,6 @@ orioledb_amadjustmembers(Oid opfamilyoid, Oid opclassoid, List *operators,
 {
 }
 
-static void
-cache_scan_tupdesc_and_slot(OScanState *o_scan, OIndexDescr *index_descr, OTableDescr *descr)
-{
-	MemoryContext oldcxt;
-	IndexScanDesc scan = &o_scan->scandesc;
-
-	/* TODO: Move this to index descr initialization */
-	oldcxt = MemoryContextSwitchTo(o_scan->cxt);
-
-	if (!index_descr->primaryIsCtid)
-	{
-		int			pk_nfields = index_descr->nPrimaryFields;
-		int			nfields;
-		int			pk_nfield;
-		int			i;
-
-		for (i = 0; i < index_descr->nPrimaryFields; i++)
-		{
-			bool		found = false;
-			AttrNumber	attnum = index_descr->primaryFieldsAttnums[i] - 1;
-			Form_pg_attribute pk_attr = &index_descr->leafTupdesc->attrs[attnum];
-
-			for (int j = 0; j < scan->indexRelation->rd_att->natts; j++)
-			{
-				Form_pg_attribute idx_attr = &scan->indexRelation->rd_att->attrs[j];
-
-				if (strncmp(pk_attr->attname.data, idx_attr->attname.data, NAMEDATALEN) == 0)
-				{
-					found = true;
-					break;
-				}
-			}
-			if (found)
-				pk_nfields--;
-		}
-
-		nfields = scan->indexRelation->rd_att->natts + pk_nfields;
-
-		o_scan->cached_itupdesc = CreateTemplateTupleDesc(nfields);
-		for (i = 0; i < scan->indexRelation->rd_att->natts; i++)
-		{
-			TupleDescCopyEntry(o_scan->cached_itupdesc, i + 1, scan->indexRelation->rd_att, i + 1);
-		}
-
-		pk_nfield = scan->indexRelation->rd_att->natts;
-
-		for (i = 0; i < index_descr->nPrimaryFields; i++)
-		{
-			bool		found = false;
-			AttrNumber	attnum = index_descr->primaryFieldsAttnums[i] - 1;
-			Form_pg_attribute pk_attr = &index_descr->leafTupdesc->attrs[attnum];
-
-			for (int j = 0; j < scan->indexRelation->rd_att->natts; j++)
-			{
-				Form_pg_attribute idx_attr = &scan->indexRelation->rd_att->attrs[j];
-
-				if (strncmp(pk_attr->attname.data, idx_attr->attname.data, NAMEDATALEN) == 0)
-				{
-					found = true;
-					break;
-				}
-			}
-
-			if (!found)
-			{
-				TupleDescCopyEntry(o_scan->cached_itupdesc, pk_nfield + 1, index_descr->leafTupdesc, attnum + 1);
-				pk_nfield++;
-			}
-		}
-	}
-	else
-	{
-		int			nfields = index_descr->nFields;
-		OTableIndex *o_tbl_idx;
-		OTable	   *o_table;
-		int			i;
-
-		o_table = o_tables_get(index_descr->tableOids);
-		o_tbl_idx = &o_table->indices[o_scan->ixNum - 1];
-		o_scan->cached_itupdesc = CreateTemplateTupleDesc(o_tbl_idx->nfields);
-		nfields--;
-		for (i = 0; i < o_tbl_idx->nfields; i++)
-		{
-			if (i < nfields)
-				TupleDescCopyEntry(o_scan->cached_itupdesc, i + 1, index_descr->leafTupdesc, i + 1);
-			else
-			{
-				int			j;
-				int			found = -1;
-
-				for (j = 0; j < nfields; j++)
-				{
-					if (o_tbl_idx->fields[i].attnum == o_tbl_idx->fields[j].attnum)
-					{
-						found = j;
-						break;
-					}
-				}
-				Assert(found >= 0);
-				TupleDescCopyEntry(o_scan->cached_itupdesc, i + 1, index_descr->leafTupdesc, found + 1);
-			}
-		}
-		o_table_free(o_table);
-	}
-	MemoryContextSwitchTo(oldcxt);
-
-	o_scan->cached_index_slot = MakeSingleTupleTableSlot(o_scan->cached_itupdesc, &TTSOpsOrioleDB);
-}
-
 IndexScanDesc
 orioledb_ambeginscan(Relation rel, int nkeys, int norderbys)
 {
@@ -1324,7 +1215,6 @@ orioledb_ambeginscan(Relation rel, int nkeys, int norderbys)
 	o_scan->cxt = AllocSetContextCreate(CurrentMemoryContext,
 										"orioledb_cs plan data",
 										ALLOCSET_DEFAULT_SIZES);
-	cache_scan_tupdesc_and_slot(o_scan, index_descr, descr);
 	return scan;
 }
 
@@ -1333,27 +1223,11 @@ orioledb_amrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 				  ScanKey orderbys, int norderbys)
 {
 	OScanState *o_scan = (OScanState *) scan;
-	OIndexDescr *index_descr;
-	OTableDescr *descr;
-	ORelOids	oids;
-	OIndexType	ix_type;
 
 	MemoryContextReset(o_scan->cxt);
 	o_scan->iterator = NULL;
 	o_scan->curKeyRangeIsLoaded = false;
 	btrescan(scan, scankey, nscankeys, orderbys, norderbys);
-	ORelOidsSetFromRel(oids, scan->indexRelation);
-	if (scan->indexRelation->rd_index->indisprimary)
-		ix_type = oIndexPrimary;
-	else if (scan->indexRelation->rd_index->indisunique)
-		ix_type = oIndexUnique;
-	else
-		ix_type = oIndexRegular;
-	index_descr = o_fetch_index_descr(oids, ix_type, false, NULL);
-	Assert(index_descr != NULL);
-	descr = o_fetch_table_descr(index_descr->tableOids);
-	Assert(descr != NULL);
-	cache_scan_tupdesc_and_slot(o_scan, index_descr, descr);
 }
 
 static void
@@ -1382,7 +1256,7 @@ fill_itup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr, CommitSeqNo tupl
 				tuple_size;
 	Pointer		ptr;
 
-	slot = o_scan->cached_index_slot;
+	slot = index_descr->index_slot;
 	tts_orioledb_store_tuple(slot, tuple, descr, tupleCsn, o_scan->ixNum, false, hint);
 	slot_getallattrs(slot);
 
@@ -1390,13 +1264,13 @@ fill_itup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr, CommitSeqNo tupl
 	 * moving values from duplicate field places that will be filled during
 	 * index_form_tuple
 	 */
-	if (o_scan->cached_itupdesc->natts > index_descr->leafTupdesc->natts)
+	if (index_descr->itupdesc->natts > index_descr->leafTupdesc->natts)
 	{
-		int			skipped = o_scan->cached_itupdesc->natts - index_descr->leafTupdesc->natts;
+		int			skipped = index_descr->itupdesc->natts - index_descr->leafTupdesc->natts;
 
-		for (int copy_to = o_scan->cached_itupdesc->natts - 1; copy_to >= 0; copy_to--)
+		for (int copy_to = index_descr->itupdesc->natts - 1; copy_to >= 0; copy_to--)
 		{
-			Form_pg_attribute idx_attr = &o_scan->cached_itupdesc->attrs[copy_to];
+			Form_pg_attribute idx_attr = &index_descr->itupdesc->attrs[copy_to];
 			Form_pg_attribute slot_attr = &index_descr->leafTupdesc->attrs[copy_to - skipped];
 
 			if (strncmp(slot_attr->attname.data, idx_attr->attname.data, NAMEDATALEN) == 0)
@@ -1499,10 +1373,8 @@ fill_itup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr, CommitSeqNo tupl
 	scan->xs_rowid.isnull = false;
 	scan->xs_rowid.value = PointerGetDatum(rowid);
 
-	scan->xs_itupdesc = o_scan->cached_itupdesc;
-	scan->xs_itup = index_form_tuple(o_scan->cached_itupdesc,
-									 slot->tts_values,
-									 slot->tts_isnull);
+	scan->xs_itupdesc = index_descr->itupdesc;
+	scan->xs_itup = index_form_tuple(index_descr->itupdesc, slot->tts_values, slot->tts_isnull);
 
 	ItemPointerCopy(&slot->tts_tid, &scan->xs_itup->t_tid);
 }
