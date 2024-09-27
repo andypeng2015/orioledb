@@ -1172,7 +1172,7 @@ fill_current_oxid_csn(OXid *oxid, CommitSeqNo *csn)
 				errdetail("Stay tuned, it will be added in future releases."));
 
 	if (ActiveSnapshotSet())
-		*csn = GetActiveSnapshot()->snapshotcsn;
+		*csn = GetActiveSnapshot()->csnSnapshotData.snapshotcsn;
 	else
 		*csn = COMMITSEQNO_INPROGRESS;
 	*oxid = get_current_oxid();

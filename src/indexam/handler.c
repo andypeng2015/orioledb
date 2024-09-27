@@ -1399,7 +1399,7 @@ orioledb_amgettuple(IndexScanDesc scan, ScanDirection dir)
 	else if (scan->xs_snapshot->snapshot_type == SNAPSHOT_NON_VACUUMABLE)
 		o_scan->csn = COMMITSEQNO_NON_DELETED;
 	else
-		o_scan->csn = scan->xs_snapshot->snapshotcsn;
+		o_scan->csn = scan->xs_snapshot->csnSnapshotData.snapshotcsn;
 
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;

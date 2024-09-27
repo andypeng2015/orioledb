@@ -1932,7 +1932,7 @@ orioledb_snapshot_hook(Snapshot snapshot)
 	 */
 	pg_read_barrier();
 
-	snapshot->snapshotcsn = pg_atomic_read_u64(&ShmemVariableCache->nextCommitSeqNo);
+	snapshot->csnSnapshotData.snapshotcsn = pg_atomic_read_u64(&ShmemVariableCache->nextCommitSeqNo);
 }
 
 static void

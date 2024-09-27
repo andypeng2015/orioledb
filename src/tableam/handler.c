@@ -414,7 +414,7 @@ orioledb_tuple_delete(Relation relation, Datum tupleid, CommandId cid,
 	OTableDescr *descr;
 	OXid		oxid;
 	BTreeLocationHint hint;
-	CommitSeqNo csn = snapshot ? snapshot->snapshotcsn : COMMITSEQNO_INPROGRESS;
+	CommitSeqNo csn = snapshot ? snapshot->csnSnapshotData.snapshotcsn : COMMITSEQNO_INPROGRESS;
 
 	descr = relation_get_descr(relation);
 
@@ -501,7 +501,7 @@ orioledb_tuple_update(Relation relation, Datum tupleid, TupleTableSlot *slot,
 	OTableDescr *descr;
 	OXid		oxid;
 	BTreeLocationHint hint;
-	CommitSeqNo csn = snapshot ? snapshot->snapshotcsn : COMMITSEQNO_INPROGRESS;
+	CommitSeqNo csn = snapshot ? snapshot->csnSnapshotData.snapshotcsn : COMMITSEQNO_INPROGRESS;
 
 	descr = relation_get_descr(relation);
 
@@ -1183,7 +1183,7 @@ orioledb_beginscan(Relation relation, Snapshot snapshot,
 	if (scan->rs_base.rs_flags & SO_TYPE_ANALYZE)
 		scan->csn = COMMITSEQNO_INPROGRESS;
 	else
-		scan->csn = snapshot->snapshotcsn;
+		scan->csn = snapshot->csnSnapshotData.snapshotcsn;
 
 	ItemPointerSetBlockNumber(&scan->iptr, 0);
 	ItemPointerSetOffsetNumber(&scan->iptr, FirstOffsetNumber);

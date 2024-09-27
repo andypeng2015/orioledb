@@ -523,7 +523,7 @@ o_begin_custom_scan(CustomScanState *node, EState *estate, int eflags)
 			}
 		}
 
-		bitmap_state->csn = estate->es_snapshot->snapshotcsn;
+		bitmap_state->csn = estate->es_snapshot->csnSnapshotData.snapshotcsn;
 		bitmap_state->cxt = AllocSetContextCreate(estate->es_query_cxt,
 												  "orioledb_cs plan data",
 												  ALLOCSET_DEFAULT_SIZES);
