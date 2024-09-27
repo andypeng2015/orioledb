@@ -1942,6 +1942,8 @@ orioledb_snapshot_hook(Snapshot snapshot)
 	pg_read_barrier();
 
 	snapshot->csnSnapshotData.snapshotcsn = pg_atomic_read_u64(&ShmemVariableCache->nextCommitSeqNo);
+	snapshot->csnSnapshotData.xlogptr = InvalidXLogRecPtr;
+	snapshot->csnSnapshotData.xmin = pg_atomic_read_u64(&xid_meta->runXmin);
 }
 
 static void
