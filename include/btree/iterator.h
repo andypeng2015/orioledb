@@ -35,20 +35,20 @@ typedef TupleFetchCallbackResult (*TupleFetchCallback) (OTuple tuple,
 
 extern OTuple o_btree_find_tuple_by_key(BTreeDescr *desc, void *key,
 										BTreeKeyType kind,
-										CommitSeqNo readCsn,
-										CommitSeqNo *outCsn,
+										OSnapshot *read_o_snapshot,
+										OSnapshot *out_o_snapshot,
 										MemoryContext mcxt,
 										BTreeLocationHint *hint);
 
 extern BTreeIterator *o_btree_iterator_create(BTreeDescr *desc, void *key,
-											  BTreeKeyType kind, CommitSeqNo csn,
+											  BTreeKeyType kind, OSnapshot *o_snapshot,
 											  ScanDirection scan);
 extern void o_btree_iterator_set_tuple_ctx(BTreeIterator *it,
 										   MemoryContext tupleCxt);
 extern void o_btree_iterator_set_callback(BTreeIterator *it,
 										  TupleFetchCallback callback,
 										  void *arg);
-extern OTuple o_btree_iterator_fetch(BTreeIterator *it, CommitSeqNo *tupleCsn,
+extern OTuple o_btree_iterator_fetch(BTreeIterator *it, OSnapshot *tuple_o_snapshot,
 									 void *end, BTreeKeyType endType,
 									 bool endIsIncluded,
 									 BTreeLocationHint *hint);
@@ -63,8 +63,8 @@ extern void btree_iterator_free(BTreeIterator *it);
 
 extern OTuple o_btree_find_tuple_by_key_cb(BTreeDescr *desc, void *key,
 										   BTreeKeyType kind,
-										   CommitSeqNo readCsn,
-										   CommitSeqNo *outCsn,
+										   OSnapshot *read_o_snapshot,
+										   OSnapshot *out_o_snapshot,
 										   MemoryContext mcxt,
 										   BTreeLocationHint *hint,
 										   bool *deleted,

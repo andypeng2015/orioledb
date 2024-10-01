@@ -221,7 +221,7 @@ assign_new_oids(OTable *oTable, Relation rel)
 void
 recreate_o_table(OTable *old_o_table, OTable *o_table)
 {
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 	OXid		oxid;
 	int			oldTreeOidsNum,
 				newTreeOidsNum;
@@ -230,13 +230,13 @@ recreate_o_table(OTable *old_o_table, OTable *o_table)
 				newOids = o_table->oids,
 			   *newTreeOids;
 
-	fill_current_oxid_csn(&oxid, &csn);
+	fill_current_oxid_osnapshot(&oxid, &o_snapshot);
 
 	oldTreeOids = o_table_make_index_oids(old_o_table, &oldTreeOidsNum);
 	newTreeOids = o_table_make_index_oids(o_table, &newTreeOidsNum);
 
-	o_tables_drop_by_oids(old_o_table->oids, oxid, csn);
-	o_tables_add(o_table, oxid, csn);
+	o_tables_drop_by_oids(old_o_table->oids, oxid, &o_snapshot);
+	o_tables_add(o_table, oxid, &o_snapshot);
 
 	add_undo_truncate_relnode(oldOids, oldTreeOids, oldTreeOidsNum,
 							  newOids, newTreeOids, newTreeOidsNum);
@@ -555,11 +555,11 @@ o_define_index(Relation heap, Relation index, Oid indoid, bool reindex,
 	}
 	else
 	{
-		CommitSeqNo csn;
+		OSnapshot	o_snapshot;
 		OXid		oxid;
 
-		fill_current_oxid_csn(&oxid, &csn);
-		o_tables_update(o_table, oxid, csn);
+		fill_current_oxid_osnapshot(&oxid, &o_snapshot);
+		o_tables_update(o_table, oxid, &o_snapshot);
 		if (!reuse_relnode)
 			add_undo_create_relnode(o_table->oids, &table_index->oids, 1);
 		recreate_table_descr_by_oids(oids);
@@ -1268,16 +1268,17 @@ scan_getnextslot_allattrs(BTreeSeqScan *scan, OTableDescr *descr,
 						  TupleTableSlot *slot, double *ntuples)
 {
 	OTuple		tup;
-	CommitSeqNo tupleCsn;
 	BTreeLocationHint hint;
+	OSnapshot	temp_o_snapshot;
+	OSnapshot	tuple_o_snapshot;
 
-	tup = btree_seq_scan_getnext(scan, slot->tts_mcxt, &tupleCsn, &hint);
+	tup = btree_seq_scan_getnext(scan, slot->tts_mcxt, &tuple_o_snapshot, &hint);
 
 	if (O_TUPLE_IS_NULL(tup))
 		return false;
 
-	tts_orioledb_store_tuple(slot, tup, descr,
-							 COMMITSEQNO_INPROGRESS, PrimaryIndexNumber,
+	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+	tts_orioledb_store_tuple(slot, tup, descr, &temp_o_snapshot, PrimaryIndexNumber,
 							 true, &hint);
 	slot_getallattrs(slot);
 	(*ntuples)++;
@@ -1829,7 +1830,7 @@ drop_primary_index(Relation rel, OTable *o_table)
 static void
 drop_secondary_index(OTable *o_table, OIndexNumber ix_num)
 {
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 	OXid		oxid;
 	ORelOids	deletedOids;
 
@@ -1845,9 +1846,9 @@ drop_secondary_index(OTable *o_table, OIndexNumber ix_num)
 	}
 
 	/* update o_table */
-	fill_current_oxid_csn(&oxid, &csn);
+	fill_current_oxid_osnapshot(&oxid, &o_snapshot);
 	o_tables_table_meta_lock(o_table);
-	o_tables_update(o_table, oxid, csn);
+	o_tables_update(o_table, oxid, &o_snapshot);
 	o_tables_table_meta_unlock(o_table, InvalidOid);
 	add_undo_drop_relnode(o_table->oids, &deletedOids, 1);
 	recreate_table_descr_by_oids(o_table->oids);

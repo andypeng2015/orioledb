@@ -1332,7 +1332,7 @@ oxid_get_xlog_ptr(OXid oxid)
 }
 
 void
-fill_current_oxid_csn(OXid *oxid, CommitSeqNo *csn)
+fill_current_oxid_osnapshot(OXid *oxid, OSnapshot *snapshot)
 {
 	if (XactIsoLevel == XACT_SERIALIZABLE)
 		ereport(ERROR,
@@ -1341,9 +1341,17 @@ fill_current_oxid_csn(OXid *oxid, CommitSeqNo *csn)
 				errdetail("Stay tuned, it will be added in future releases."));
 
 	if (ActiveSnapshotSet())
-		*csn = GetActiveSnapshot()->csnSnapshotData.snapshotcsn;
+	{
+		snapshot->csn = GetActiveSnapshot()->csnSnapshotData.snapshotcsn;
+		snapshot->xlogptr = GetActiveSnapshot()->csnSnapshotData.xlogptr;
+		snapshot->xmin = GetActiveSnapshot()->csnSnapshotData.xmin;
+	}
 	else
-		*csn = COMMITSEQNO_INPROGRESS;
+	{
+		snapshot->csn = COMMITSEQNO_INPROGRESS;
+		snapshot->xlogptr = InvalidXLogRecPtr;
+		snapshot->xmin = InvalidXLogRecPtr;
+	}
 	*oxid = get_current_oxid();
 }
 

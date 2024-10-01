@@ -306,6 +306,8 @@ free_extent(BTreeDescr *desc, FileExtent extent)
 
 	while (!inserted)
 	{
+		OSnapshot o_snapshot;
+
 		/* reset status */
 		tup.extent.length = 0;
 		tup.extent.offset = (uint64) extent.off + extent.len;
@@ -317,9 +319,10 @@ free_extent(BTreeDescr *desc, FileExtent extent)
 		/* finds neighbors tuples in the (off, len) B-tree */
 		tmpTup.data = (Pointer) &tup;
 		tmpTup.formatFlags = 0;
+		o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 		it = o_btree_iterator_create(off_len_tree, (Pointer) &tmpTup,
 									 BTreeKeyNonLeafKey,
-									 COMMITSEQNO_INPROGRESS,
+									 &o_snapshot,
 									 BackwardScanDirection);
 		tmpTup = o_btree_iterator_fetch(it, NULL, NULL, BTreeKeyLeafTuple,
 										false, NULL);
@@ -487,6 +490,7 @@ foreach_free_extent(BTreeDescr *desc, ForEachExtentCallback callback, void *arg)
 	OTuple		tmpTup;
 	OTuple		toTup;
 	OTuple		fromTup;
+	OSnapshot o_snapshot;
 
 	enable_stopevents = false;
 
@@ -504,9 +508,10 @@ foreach_free_extent(BTreeDescr *desc, ForEachExtentCallback callback, void *arg)
 	toTup.formatFlags = 0;
 	Assert(from.relnode < to.relnode);
 
+	o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	it = o_btree_iterator_create(off_len_tree, (Pointer) &fromTup,
 								 BTreeKeyNonLeafKey,
-								 COMMITSEQNO_INPROGRESS,
+								 &o_snapshot,
 								 ForwardScanDirection);
 
 	while (true)

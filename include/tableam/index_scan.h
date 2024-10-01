@@ -35,7 +35,7 @@ typedef struct OScanState
 	List	   *indexQuals;
 	/* used only by direct modify functions */
 	CmdType		cmd;
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 } OScanState;
 
 /*
@@ -44,10 +44,10 @@ typedef struct OScanState
 extern void init_index_scan_state(OScanState *ostate, Relation index,
 								  ExprContext *econtext);
 extern OTuple o_iterate_index(OIndexDescr *indexDescr, OScanState *ostate,
-							  CommitSeqNo *tupleCsn, MemoryContext tupleCxt,
+							  OSnapshot *tuple_o_snapshot, MemoryContext tupleCxt,
 							  BTreeLocationHint *hint);
 extern OTuple o_index_scan_getnext(OTableDescr *descr, OScanState *ostate,
-								   CommitSeqNo *tupleCsn,
+								   OSnapshot *tuple_o_snapshot,
 								   bool scan_primary, MemoryContext tupleCxt,
 								   BTreeLocationHint *hint);
 extern bool o_exec_qual(ExprContext *econtext, ExprState *qual,

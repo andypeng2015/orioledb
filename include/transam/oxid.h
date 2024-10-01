@@ -42,6 +42,12 @@ typedef struct
 
 extern XidMeta *xid_meta;
 
+typedef struct OSnapshot {
+	CommitSeqNo	   csn;
+	XLogRecPtr	   xlogptr;
+	XLogRecPtr	   xmin;
+} OSnapshot;
+
 extern Size oxid_shmem_needs(void);
 extern void oxid_init_shmem(Pointer ptr, bool found);
 extern bool wait_for_oxid(OXid oxid);
@@ -66,7 +72,7 @@ extern void current_oxid_commit(CommitSeqNo csn);
 extern void current_oxid_abort(void);
 extern CommitSeqNo oxid_get_csn(OXid oxid);
 extern XLogRecPtr oxid_get_xlog_ptr(OXid oxid);
-extern void fill_current_oxid_csn(OXid *oxid, CommitSeqNo *csn);
+extern void fill_current_oxid_osnapshot(OXid *oxid, OSnapshot *snapshot);
 extern int	oxid_get_procnum(OXid oxid);
 extern bool xid_is_finished(OXid xid);
 extern bool xid_is_finished_for_everybody(OXid xid);

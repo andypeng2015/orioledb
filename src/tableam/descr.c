@@ -114,6 +114,7 @@ read_evicted_data(Oid datoid, Oid relnode, bool delete)
 	SharedRootInfoKey key;
 	OTuple		keyTuple;
 	OTuple		result;
+	OSnapshot	temp_o_snapshot;
 
 	/*
 	 * Don't do lookup for system trees.  This is essential for initialization
@@ -128,9 +129,10 @@ read_evicted_data(Oid datoid, Oid relnode, bool delete)
 	keyTuple.formatFlags = 0;
 	keyTuple.data = (Pointer) &key;
 
+	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	result = o_btree_find_tuple_by_key(get_sys_tree(SYS_TREES_EVICTED_DATA),
 									   &keyTuple, BTreeKeyNonLeafKey,
-									   COMMITSEQNO_INPROGRESS, NULL,
+									   &temp_o_snapshot, NULL,
 									   CurrentMemoryContext, NULL);
 	if (O_TUPLE_IS_NULL(result))
 		return NULL;
@@ -170,6 +172,7 @@ orioledb_get_evicted_trees(PG_FUNCTION_ARGS)
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	BTreeIterator *it;
+	OSnapshot	o_snapshot;
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -185,19 +188,20 @@ orioledb_get_evicted_trees(PG_FUNCTION_ARGS)
 
 	MemoryContextSwitchTo(oldcontext);
 
+	o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	it = o_btree_iterator_create(get_sys_tree(SYS_TREES_EVICTED_DATA),
 								 NULL, BTreeKeyNone,
-								 COMMITSEQNO_INPROGRESS, ForwardScanDirection);
+								 &o_snapshot, ForwardScanDirection);
 
 	while (true)
 	{
 		OTuple		tuple;
-		CommitSeqNo tupCsn;
+		OSnapshot	tuple_o_snapshot;
 		Datum		values[4];
 		bool		nulls[4] = {false};
 		EvictedTreeData *data;
 
-		tuple = o_btree_iterator_fetch(it, &tupCsn, NULL,
+		tuple = o_btree_iterator_fetch(it, &tuple_o_snapshot, NULL,
 									   BTreeKeyNone, false, NULL);
 		if (O_TUPLE_IS_NULL(tuple))
 			break;
@@ -870,13 +874,15 @@ o_find_shared_root_info(SharedRootInfoKey *key)
 {
 	OTuple		key_tuple,
 				result_tuple;
+	OSnapshot	temp_o_snapshot;
 
 	key_tuple.data = (Pointer) key;
 	key_tuple.formatFlags = 0;
 
+	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	result_tuple = o_btree_find_tuple_by_key(get_sys_tree(SYS_TREES_SHARED_ROOT_INFO),
 											 &key_tuple, BTreeKeyNonLeafKey,
-											 COMMITSEQNO_INPROGRESS, NULL,
+											 &temp_o_snapshot, NULL,
 											 CurrentMemoryContext, NULL);
 
 	return (SharedRootInfo *) result_tuple.data;

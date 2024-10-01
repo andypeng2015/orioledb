@@ -45,7 +45,7 @@ extern BTreeSeqScan *make_btree_seq_scan_cb(BTreeDescr *desc, CommitSeqNo csn,
 extern BTreeSeqScan *make_btree_sampling_scan(BTreeDescr *desc,
 											  BlockSampler sampler);
 extern OTuple btree_seq_scan_getnext(BTreeSeqScan *scan, MemoryContext mctx,
-									 CommitSeqNo *tupleCsn,
+									 OSnapshot *tuple_o_snapshot,
 									 BTreeLocationHint *hint);
 extern OTuple btree_seq_scan_getnext_raw(BTreeSeqScan *scan, MemoryContext mctx,
 										 bool *end, BTreeLocationHint *hint);

@@ -89,36 +89,36 @@ extern ToastAPI tableToastAPI;
  * API implementations.
  */
 extern bool generic_toast_insert(ToastAPI *api, void *key, Pointer data,
-								 Size data_size, OXid oxid, CommitSeqNo csn,
+								 Size data_size, OXid oxid, OSnapshot *o_snapshot,
 								 void *arg);
 extern void generic_toast_sort_add(ToastAPI *api, void *key, Pointer data,
 								   Size data_size, Tuplesortstate *sortstate,
 								   void *arg);
 extern bool generic_toast_update(ToastAPI *api, void *key, Pointer data,
-								 Size data_size, OXid oxid, CommitSeqNo csn,
+								 Size data_size, OXid oxid, OSnapshot *o_snapshot,
 								 void *arg);
 extern bool generic_toast_delete(ToastAPI *api, void *key, OXid oxid,
-								 CommitSeqNo csn, void *arg);
+								 OSnapshot *o_snapshot, void *arg);
 
 extern bool generic_toast_insert_optional_wal(ToastAPI *api, void *key,
 											  Pointer data, Size data_size,
-											  OXid oxid, CommitSeqNo csn,
+											  OXid oxid, OSnapshot *o_snapshot,
 											  void *arg, bool wal);
 extern bool generic_toast_update_optional_wal(ToastAPI *api, void *key,
 											  Pointer data, Size data_size,
-											  OXid oxid, CommitSeqNo csn,
+											  OXid oxid, OSnapshot *o_snapshot,
 											  void *arg, bool wal);
 extern bool generic_toast_delete_optional_wal(ToastAPI *api, void *key,
-											  OXid oxid, CommitSeqNo csn,
+											  OXid oxid, OSnapshot *o_snapshot,
 											  void *arg, bool wal);
 
 /* Returns tuple only if its size equals data_size, or NULL otherwise */
 extern Pointer generic_toast_get(ToastAPI *api, void *key, Size data_size,
-								 CommitSeqNo csn, void *arg);
+								 OSnapshot *o_snapshot, void *arg);
 
 /* Returns tuple and size of data if found, or NULL otherwise */
 extern Pointer generic_toast_get_any(ToastAPI *api, void *key,
-									 Size *data_size, CommitSeqNo csn,
+									 Size *data_size, OSnapshot *o_snapshot,
 									 void *arg);
 
 /*
@@ -127,14 +127,14 @@ extern Pointer generic_toast_get_any(ToastAPI *api, void *key,
  * - if found_key contains valid pointer it used as version callback arg
  */
 extern Pointer generic_toast_get_any_with_key(ToastAPI *api, void *key,
-											  Size *data_size, CommitSeqNo csn,
+											  Size *data_size, OSnapshot *o_snapshot,
 											  void *arg, Pointer *found_key);
 
 /*
  * Same as generic_toast_get_any but uses fetch_callback to filter tuples
  */
 extern Pointer generic_toast_get_any_with_callback(ToastAPI *api, Pointer key,
-												   Size *data_size, CommitSeqNo csn, void *arg,
+												   Size *data_size, OSnapshot *o_snapshot, void *arg,
 												   TupleFetchCallback fetch_callback, void *callback_arg);
 
 /* Copies TupleDescs to toast definition */
@@ -146,17 +146,17 @@ extern void o_toast_init_tupdescs(OIndexDescr *toast, TupleDesc ix_primary);
 extern bool o_toast_insert(OIndexDescr *primary, OIndexDescr *toast,
 						   OTuple pk, uint16 attn,
 						   Pointer data, Size data_size,
-						   OXid oxid, CommitSeqNo csn);
+						   OXid oxid, OSnapshot *o_snapshot);
 extern void o_toast_sort_add(OIndexDescr *primary, OIndexDescr *toast,
 							 OTuple pk, uint16 attn,
 							 Pointer data, Size data_size,
 							 Tuplesortstate *sortstate);
 extern bool o_toast_delete(OIndexDescr *primary, OIndexDescr *toast,
 						   OTuple pk, uint16 attn,
-						   OXid oxid, CommitSeqNo csn);
+						   OXid oxid, OSnapshot *o_snapshot);
 extern Pointer o_toast_get(OIndexDescr *primary, OIndexDescr *toast,
 						   OTuple pk, uint16 attn, Size data_size,
-						   CommitSeqNo csn);
+						   OSnapshot *o_snapshot);
 
 extern int	o_toast_cmp(BTreeDescr *desc, void *p1, BTreeKeyType k1,
 						void *p2, BTreeKeyType k2);

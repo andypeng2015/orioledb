@@ -505,16 +505,17 @@ static void
 scan_make_iterator(BTreeSeqScan *scan, OTuple keyRangeLow, OTuple keyRangeHigh)
 {
 	MemoryContext mctx;
+	OSnapshot o_snapshot;
+
+	o_snapshot.csn = scan->snapshotCsn;
 
 	mctx = MemoryContextSwitchTo(scan->mctx);
 	if (!O_TUPLE_IS_NULL(keyRangeLow))
 		scan->iter = o_btree_iterator_create(scan->desc, &keyRangeLow, BTreeKeyNonLeafKey,
-											 scan->snapshotCsn,
-											 ForwardScanDirection);
+											 &o_snapshot, ForwardScanDirection);
 	else
 		scan->iter = o_btree_iterator_create(scan->desc, NULL, BTreeKeyNone,
-											 scan->snapshotCsn,
-											 ForwardScanDirection);
+											 &o_snapshot, ForwardScanDirection);
 	MemoryContextSwitchTo(mctx);
 
 	BTREE_PAGE_LOCATOR_SET_INVALID(&scan->leafLoc);
@@ -1162,17 +1163,17 @@ make_btree_sampling_scan(BTreeDescr *desc, BlockSampler sampler)
 
 static OTuple
 btree_seq_scan_get_tuple_from_iterator(BTreeSeqScan *scan,
-									   CommitSeqNo *tupleCsn,
+									   OSnapshot *tuple_o_snapshot,
 									   BTreeLocationHint *hint)
 {
 	OTuple		result;
 
 	if (!O_TUPLE_IS_NULL(scan->iterEnd))
-		result = o_btree_iterator_fetch(scan->iter, tupleCsn,
+		result = o_btree_iterator_fetch(scan->iter, tuple_o_snapshot,
 										&scan->iterEnd, BTreeKeyNonLeafKey,
 										false, hint);
 	else
-		result = o_btree_iterator_fetch(scan->iter, tupleCsn,
+		result = o_btree_iterator_fetch(scan->iter, tuple_o_snapshot,
 										NULL, BTreeKeyNone,
 										false, hint);
 
@@ -1310,13 +1311,14 @@ apply_next_key(BTreeSeqScan *scan)
 
 static OTuple
 btree_seq_scan_getnext_internal(BTreeSeqScan *scan, MemoryContext mctx,
-								CommitSeqNo *tupleCsn, BTreeLocationHint *hint)
+								OSnapshot *tuple_o_snapshot, BTreeLocationHint *hint)
 {
 	OTuple		tuple;
+	CommitSeqNo *tupleCsn = tuple_o_snapshot ? &tuple_o_snapshot->csn : NULL;
 
 	if (scan->iter)
 	{
-		tuple = btree_seq_scan_get_tuple_from_iterator(scan, tupleCsn, hint);
+		tuple = btree_seq_scan_get_tuple_from_iterator(scan, tuple_o_snapshot, hint);
 		if (!O_TUPLE_IS_NULL(tuple))
 			return tuple;
 	}
@@ -1438,7 +1440,7 @@ btree_seq_scan_getnext_internal(BTreeSeqScan *scan, MemoryContext mctx,
 					if (scan->iter)
 					{
 						tuple = btree_seq_scan_get_tuple_from_iterator(scan,
-																	   tupleCsn,
+																	   tuple_o_snapshot,
 																	   hint);
 						if (!O_TUPLE_IS_NULL(tuple))
 							return tuple;
@@ -1485,7 +1487,7 @@ btree_seq_scan_getnext_internal(BTreeSeqScan *scan, MemoryContext mctx,
 
 OTuple
 btree_seq_scan_getnext(BTreeSeqScan *scan, MemoryContext mctx,
-					   CommitSeqNo *tupleCsn, BTreeLocationHint *hint)
+					   OSnapshot *tuple_o_snapshot, BTreeLocationHint *hint)
 {
 	OTuple		tuple;
 
@@ -1496,7 +1498,7 @@ btree_seq_scan_getnext(BTreeSeqScan *scan, MemoryContext mctx,
 	if (scan->status == BTreeSeqScanInMemory ||
 		scan->status == BTreeSeqScanDisk)
 	{
-		tuple = btree_seq_scan_getnext_internal(scan, mctx, tupleCsn, hint);
+		tuple = btree_seq_scan_getnext_internal(scan, mctx, tuple_o_snapshot, hint);
 
 		if (!O_TUPLE_IS_NULL(tuple))
 			return tuple;

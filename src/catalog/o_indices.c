@@ -929,7 +929,7 @@ o_index_fill_descr(OIndexDescr *descr, OIndex *oIndex, OTable *oTable)
 }
 
 bool
-o_indices_add(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
+o_indices_add(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snapshot)
 {
 	OIndexChunkKey key;
 	bool		result;
@@ -949,13 +949,14 @@ o_indices_add(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
 	sys_tree = get_sys_tree(SYS_TREES_O_INDICES);
 	result = generic_toast_insert_optional_wal(&oIndicesToastAPI,
 											   (Pointer) &key, data, len, oxid,
-											   csn, sys_tree, table->persistence != RELPERSISTENCE_TEMP);
+											   o_snapshot, sys_tree,
+											   table->persistence != RELPERSISTENCE_TEMP);
 	pfree(data);
 	return result;
 }
 
 bool
-o_indices_del(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
+o_indices_del(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snapshot)
 {
 	OIndexChunkKey key;
 	bool		result;
@@ -970,7 +971,7 @@ o_indices_del(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
 
 	sys_tree = get_sys_tree(SYS_TREES_O_INDICES);
 	result = generic_toast_delete_optional_wal(&oIndicesToastAPI,
-											   (Pointer) &key, oxid, csn,
+											   (Pointer) &key, oxid, o_snapshot,
 											   sys_tree, table->persistence != RELPERSISTENCE_TEMP);
 	return result;
 }
@@ -982,13 +983,15 @@ o_indices_get(ORelOids oids, OIndexType type)
 	Size		dataLength;
 	Pointer		result;
 	OIndex	   *oIndex;
+	OSnapshot	temp_o_snapshot;
 
 	key.type = type;
 	key.oids = oids;
 	key.chunknum = 0;
 
+	temp_o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 	result = generic_toast_get_any(&oIndicesToastAPI, (Pointer) &key,
-								   &dataLength, COMMITSEQNO_NON_DELETED,
+								   &dataLength, &temp_o_snapshot,
 								   get_sys_tree(SYS_TREES_O_INDICES));
 
 	if (result == NULL)
@@ -1001,7 +1004,7 @@ o_indices_get(ORelOids oids, OIndexType type)
 }
 
 bool
-o_indices_update(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
+o_indices_update(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snapshot)
 {
 	OIndex	   *oIndex;
 	OIndexChunkKey key;
@@ -1021,7 +1024,8 @@ o_indices_update(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
 	sys_tree = get_sys_tree(SYS_TREES_O_INDICES);
 	result = generic_toast_update_optional_wal(&oIndicesToastAPI,
 											   (Pointer) &key, data, len, oxid,
-											   csn, sys_tree, table->persistence != RELPERSISTENCE_TEMP);
+											   o_snapshot, sys_tree,
+											   table->persistence != RELPERSISTENCE_TEMP);
 	systrees_modify_end(table->persistence != RELPERSISTENCE_TEMP);
 
 	pfree(data);
@@ -1030,7 +1034,7 @@ o_indices_update(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
 }
 
 bool
-o_indices_find_table_oids(ORelOids indexOids, OIndexType type, CommitSeqNo csn,
+o_indices_find_table_oids(ORelOids indexOids, OIndexType type, OSnapshot *o_snapshot,
 						  ORelOids *tableOids)
 {
 	OIndexChunkKey key;
@@ -1042,7 +1046,7 @@ o_indices_find_table_oids(ORelOids indexOids, OIndexType type, CommitSeqNo csn,
 	key.chunknum = 0;
 
 	data = generic_toast_get_any(&oIndicesToastAPI, (Pointer) &key, &dataSize,
-								 csn, get_sys_tree(SYS_TREES_O_INDICES));
+								 o_snapshot, get_sys_tree(SYS_TREES_O_INDICES));
 	if (data)
 	{
 		memcpy(tableOids, data, sizeof(ORelOids));
@@ -1062,13 +1066,15 @@ o_indices_foreach_oids(OIndexOidsCallback callback, void *arg)
 	BTreeIterator *it;
 	OTuple		tuple;
 	BTreeDescr *desc = get_sys_tree(SYS_TREES_O_INDICES);
+	OSnapshot	o_snapshot;
 
 	chunkKey.type = type;
 	chunkKey.oids = oids;
 	chunkKey.chunknum = 0;
 
+	o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 	it = o_btree_iterator_create(desc, (Pointer) &chunkKey, BTreeKeyBound,
-								 COMMITSEQNO_NON_DELETED, ForwardScanDirection);
+								 &o_snapshot, ForwardScanDirection);
 
 	tuple = o_btree_iterator_fetch(it, NULL, NULL,
 								   BTreeKeyNone, false, NULL);
@@ -1099,8 +1105,9 @@ o_indices_foreach_oids(OIndexOidsCallback callback, void *arg)
 		chunkKey.type = type;
 		chunkKey.chunknum = 0;
 
+		o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 		it = o_btree_iterator_create(desc, (Pointer) &chunkKey, BTreeKeyBound,
-									 COMMITSEQNO_NON_DELETED, ForwardScanDirection);
+									 &o_snapshot, ForwardScanDirection);
 		tuple = o_btree_iterator_fetch(it, NULL, NULL,
 									   BTreeKeyNone, false, NULL);
 	}
@@ -1330,6 +1337,7 @@ orioledb_index_rows(PG_FUNCTION_ARGS)
 	TupleDesc	tupleDesc;
 	Datum		values[2];
 	bool		nulls[2];
+	OSnapshot	o_snapshot;
 
 	idx = index_open(ix_reloid, AccessShareLock);
 	tbl = table_open(idx->rd_index->indrelid, AccessShareLock);
@@ -1350,8 +1358,9 @@ orioledb_index_rows(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &tupleDesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 
+	o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	it = o_btree_iterator_create(td, NULL, BTreeKeyNone,
-								 COMMITSEQNO_INPROGRESS, ForwardScanDirection);
+								 &o_snapshot, ForwardScanDirection);
 
 	do
 	{

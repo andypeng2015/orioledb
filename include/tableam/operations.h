@@ -47,7 +47,7 @@ typedef struct
 	OTableSlot *newSlot;
 	OXid		conflictOxid;
 	OXid		oxid;
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 	UndoLocation tupUndoLocation;
 	OIndexNumber conflictIxNum;
 	bool		copyPrimaryOxid;
@@ -61,7 +61,7 @@ typedef struct
 	OTableDescr *descr;
 	OTableSlot *newSlot;
 	OXid		oxid;
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 	UndoLocation tup_undo_location;
 	BTreeLeafTupleDeletedStatus deleted;
 	bool		modified;
@@ -76,7 +76,7 @@ typedef struct
 	TupleTableSlot *scanSlot;
 	OTableDescr *descr;
 	OXid		oxid;
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 	LockWaitPolicy waitPolicy;
 	UndoLocation tupUndoLocation;
 	BTreeLeafTupleDeletedStatus deleted;
@@ -87,7 +87,7 @@ typedef struct
 
 extern TupleTableSlot *o_tbl_insert(OTableDescr *descr, Relation relation,
 									TupleTableSlot *slot, OXid oxid,
-									CommitSeqNo csn);
+									OSnapshot *o_snapshot);
 extern TupleTableSlot *o_tbl_insert_with_arbiter(Relation rel,
 												 OTableDescr *descr,
 												 TupleTableSlot *slot,
@@ -98,7 +98,7 @@ extern OBTreeModifyResult o_tbl_index_insert(OTableDescr *descr,
 											 OIndexDescr *id,
 											 OTuple *own_tup,
 											 TupleTableSlot *slot,
-											 OXid oxid, CommitSeqNo csn,
+											 OXid oxid, OSnapshot *o_snapshot,
 											 BTreeModifyCallbackInfo *callbackInfo);
 extern OBTreeModifyResult o_tbl_lock(OTableDescr *descr, OBTreeKeyBound *pkey,
 									 LockTupleMode mode, OXid oxid,
@@ -107,7 +107,7 @@ extern OBTreeModifyResult o_tbl_lock(OTableDescr *descr, OBTreeKeyBound *pkey,
 extern OTableModifyResult o_tbl_update(OTableDescr *descr, TupleTableSlot *slot,
 									   OBTreeKeyBound *oldPkey,
 									   Relation rel, OXid oxid,
-									   CommitSeqNo csn,
+									   OSnapshot *o_snapshot,
 									   BTreeLocationHint *hint,
 									   OModifyCallbackArg *arg);
 extern OTableModifyResult o_update_secondary_index(OIndexDescr *id,
@@ -118,16 +118,16 @@ extern OTableModifyResult o_update_secondary_index(OIndexDescr *id,
 												   OTuple new_ix_tup,
 												   TupleTableSlot *oldSlot,
 												   OXid oxid,
-												   CommitSeqNo csn);
+												   OSnapshot *o_snapshot);
 extern OTableModifyResult o_tbl_delete(OTableDescr *descr,
 									   OBTreeKeyBound *primary_key,
-									   OXid oxid, CommitSeqNo csn,
+									   OXid oxid, OSnapshot *o_snapshot,
 									   BTreeLocationHint *hint,
 									   OModifyCallbackArg *arg);
 extern OTableModifyResult o_tbl_index_delete(OIndexDescr *id,
 											 OIndexNumber ix_num,
 											 TupleTableSlot *slot,
-											 OXid oxid, CommitSeqNo csn);
+											 OXid oxid, OSnapshot *o_snapshot);
 extern void o_check_tbl_update_mres(OTableModifyResult mres,
 									OTableDescr *descr,
 									Relation rel,

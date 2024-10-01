@@ -806,13 +806,13 @@ tts_orioledb_init_reader(TupleTableSlot *slot)
 
 static void
 tts_orioledb_store_tuple_internal(TupleTableSlot *slot, OTuple tuple,
-								  OTableDescr *descr, CommitSeqNo csn,
+								  OTableDescr *descr, OSnapshot *o_snapshot,
 								  int ixnum, bool leafTuple, bool shouldfree,
 								  BTreeLocationHint *hint)
 {
 	OTableSlot *oslot = (OTableSlot *) slot;
 
-	Assert(COMMITSEQNO_IS_NORMAL(csn) || COMMITSEQNO_IS_INPROGRESS(csn));
+	Assert(COMMITSEQNO_IS_NORMAL(o_snapshot->csn) || COMMITSEQNO_IS_INPROGRESS(o_snapshot->csn));
 	Assert(slot->tts_ops == &TTSOpsOrioleDB);
 
 	tts_orioledb_clear(slot);
@@ -825,7 +825,7 @@ tts_orioledb_store_tuple_internal(TupleTableSlot *slot, OTuple tuple,
 
 	oslot->tuple = tuple;
 	oslot->descr = descr;
-	oslot->csn = csn;
+	oslot->csn = o_snapshot->csn;
 	oslot->ixnum = ixnum;
 	oslot->leafTuple = leafTuple;
 	oslot->version = o_tuple_get_version(tuple);
@@ -841,20 +841,20 @@ tts_orioledb_store_tuple_internal(TupleTableSlot *slot, OTuple tuple,
 
 void
 tts_orioledb_store_tuple(TupleTableSlot *slot, OTuple tuple,
-						 OTableDescr *descr, CommitSeqNo csn,
+						 OTableDescr *descr, OSnapshot *o_snapshot,
 						 int ixnum, bool shouldfree, BTreeLocationHint *hint)
 {
-	tts_orioledb_store_tuple_internal(slot, tuple, descr, csn, ixnum, true,
+	tts_orioledb_store_tuple_internal(slot, tuple, descr, o_snapshot, ixnum, true,
 									  shouldfree, hint);
 }
 
 void
 tts_orioledb_store_non_leaf_tuple(TupleTableSlot *slot, OTuple tuple,
-								  OTableDescr *descr, CommitSeqNo csn,
+								  OTableDescr *descr, OSnapshot *o_snapshot,
 								  int ixnum, bool shouldfree,
 								  BTreeLocationHint *hint)
 {
-	tts_orioledb_store_tuple_internal(slot, tuple, descr, csn, ixnum, false,
+	tts_orioledb_store_tuple_internal(slot, tuple, descr, o_snapshot, ixnum, false,
 									  shouldfree, hint);
 }
 
@@ -1397,7 +1397,7 @@ tts_orioledb_form_orphan_tuple(TupleTableSlot *slot,
 bool
 tts_orioledb_insert_toast_values(TupleTableSlot *slot,
 								 OTableDescr *descr,
-								 OXid oxid, CommitSeqNo csn)
+								 OXid oxid, OSnapshot *o_snapshot)
 {
 	OTableSlot *oslot = (OTableSlot *) slot;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
@@ -1425,7 +1425,7 @@ tts_orioledb_insert_toast_values(TupleTableSlot *slot,
 			o_btree_load_shmem(&descr->toast->desc);
 			result = o_toast_insert(GET_PRIMARY(descr), descr->toast,
 									idx_tup, i + 1 + ctid_off, p,
-									toast_datum_size(value), oxid, csn);
+									toast_datum_size(value), oxid, o_snapshot);
 			if (free)
 				pfree(p);
 			if (!result)
@@ -1476,7 +1476,7 @@ tts_orioledb_toast_sort_add(TupleTableSlot *slot,
 bool
 tts_orioledb_remove_toast_values(TupleTableSlot *slot,
 								 OTableDescr *descr,
-								 OXid oxid, CommitSeqNo csn)
+								 OXid oxid, OSnapshot *o_snapshot)
 {
 	int			i;
 	bool		result = true;
@@ -1513,7 +1513,7 @@ tts_orioledb_remove_toast_values(TupleTableSlot *slot,
 									key.tuple,
 									toast_attn + 1 + ctid_off,
 									oxid,
-									csn);
+									o_snapshot);
 			if (!result)
 				break;
 		}
@@ -1525,7 +1525,7 @@ bool
 tts_orioledb_update_toast_values(TupleTableSlot *oldSlot,
 								 TupleTableSlot *newSlot,
 								 OTableDescr *descr,
-								 OXid oxid, CommitSeqNo csn)
+								 OXid oxid, OSnapshot *o_snapshot)
 {
 	OTableSlot *newOSlot = (OTableSlot *) newSlot;
 	OTuple		idx_tup;
@@ -1687,7 +1687,7 @@ tts_orioledb_update_toast_values(TupleTableSlot *oldSlot,
 									key.tuple,
 									toast_attn + 1 + ctid_off,
 									oxid,
-									csn);
+									o_snapshot);
 			if (!result)
 				break;
 		}
@@ -1709,7 +1709,7 @@ tts_orioledb_update_toast_values(TupleTableSlot *oldSlot,
 									p,
 									toast_datum_size(value),
 									oxid,
-									csn);
+									o_snapshot);
 			if (free)
 				pfree(p);
 			if (!result)

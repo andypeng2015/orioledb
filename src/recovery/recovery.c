@@ -309,7 +309,7 @@ static void worker_wait_shutdown(RecoveryWorkerState *worker);
 
 static inline bool apply_sys_tree_modify_record(int sys_tree_num, uint16 type,
 												OTuple tup,
-												OXid oxid, CommitSeqNo csn);
+												OXid oxid, OSnapshot *o_snapshot);
 static inline void spread_idx_modify(BTreeDescr *desc, uint16 recType,
 									 OTuple rec);
 
@@ -1487,7 +1487,7 @@ recovery_insert_deleted_systree_callback(BTreeDescr *descr,
  */
 bool
 apply_btree_modify_record(BTreeDescr *tree, uint16 type, OTuple ptr,
-						  OXid oxid, CommitSeqNo csn)
+						  OXid oxid, OSnapshot *o_snapshot)
 {
 	OBTreeModifyResult modifyResult;
 	BTreeModifyCallbackInfo callbackInfo = nullCallbackInfo;
@@ -1535,7 +1535,7 @@ apply_btree_modify_record(BTreeDescr *tree, uint16 type, OTuple ptr,
 			modifyResult = o_btree_modify(tree, BTreeOperationInsert,
 										  ptr, BTreeKeyLeafTuple,
 										  NULL, BTreeKeyNone,
-										  oxid, csn, RowLockUpdate,
+										  oxid, o_snapshot, RowLockUpdate,
 										  NULL, &callbackInfo);
 			result = modifyResult == OBTreeModifyResultInserted || modifyResult == OBTreeModifyResultUpdated;
 			break;
@@ -1543,13 +1543,13 @@ apply_btree_modify_record(BTreeDescr *tree, uint16 type, OTuple ptr,
 			result = o_btree_modify(tree, BTreeOperationInsert,
 									ptr, BTreeKeyLeafTuple,
 									NULL, BTreeKeyNone,
-									oxid, csn, RowLockNoKeyUpdate,
+									oxid, o_snapshot, RowLockNoKeyUpdate,
 									NULL, &callbackInfo) == OBTreeModifyResultUpdated;
 			break;
 		case RECOVERY_DELETE:
 			result = o_btree_modify(tree, BTreeOperationDelete,
 									ptr, BTreeKeyNonLeafKey,
-									NULL, BTreeKeyNone, oxid, csn, RowLockUpdate,
+									NULL, BTreeKeyNone, oxid, o_snapshot, RowLockUpdate,
 									NULL, &callbackInfo) == OBTreeModifyResultDeleted;
 			break;
 		default:
@@ -2674,6 +2674,8 @@ replay_container(Pointer startPtr, Pointer endPtr,
 
 			if (sys_tree_num > 0 && xlogRecPtr >= checkpoint_state->sysTreesStartPtr)
 			{
+				OSnapshot o_snapshot;
+
 				Assert(sys_tree_supports_transactions(sys_tree_num));
 				recovery_switch_to_oxid(oxid, -1);
 
@@ -2684,9 +2686,10 @@ replay_container(Pointer startPtr, Pointer endPtr,
 				if (!single)
 					workers_synchronize(xlogPtr, true);
 
+				o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 				success = apply_sys_tree_modify_record(sys_tree_num, type,
 													   tuple.tuple, oxid,
-													   COMMITSEQNO_INPROGRESS);
+													   &o_snapshot);
 
 				if (sys_tree_num == SYS_TREES_O_INDICES && success)
 				{
@@ -3194,12 +3197,12 @@ worker_queue_flush(int worker_id)
  */
 static bool
 apply_sys_tree_modify_record(int sys_tree_num, uint16 type, OTuple tup,
-							 OXid oxid, CommitSeqNo csn)
+							 OXid oxid, OSnapshot *o_snapshot)
 {
 	bool		result;
 
 	result = apply_btree_modify_record(get_sys_tree(sys_tree_num),
-									   type, tup, oxid, csn);
+									   type, tup, oxid, o_snapshot);
 
 	return result;
 }

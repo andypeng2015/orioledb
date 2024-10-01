@@ -193,7 +193,7 @@ o_index_getbitmap(OBitmapHeapPlanState *bitmap_state,
 	else
 		ea_counters = NULL;
 
-	ostate.csn = bitmap_state->csn;
+	ostate.o_snapshot.csn = bitmap_state->csn;
 	ostate.onlyCurIx = true;
 	ostate.cxt = bitmap_state->cxt;
 
@@ -381,9 +381,9 @@ o_exec_bitmap_fetch(OBitmapScan *scan, CustomScanState *node)
 		OTuple		tuple;
 		BTreeLocationHint hint;
 		MemoryContext tupleCxt = node->ss.ss_ScanTupleSlot->tts_mcxt;
-		CommitSeqNo tupleCsn;
+		OSnapshot tuple_o_snapshot;
 
-		tuple = btree_seq_scan_getnext(scan->seq_scan, tupleCxt, &tupleCsn,
+		tuple = btree_seq_scan_getnext(scan->seq_scan, tupleCxt, &tuple_o_snapshot,
 									   &hint);
 
 		if (O_TUPLE_IS_NULL(tuple))
@@ -410,7 +410,7 @@ o_exec_bitmap_fetch(OBitmapScan *scan, CustomScanState *node)
 													 &TTSOpsOrioleDB);
 				MemoryContextSwitchTo(oldcxt);
 				tts_orioledb_store_tuple(scan_slot, tuple,
-										 descr, tupleCsn,
+										 descr, &tuple_o_snapshot,
 										 PrimaryIndexNumber,
 										 true, &hint);
 

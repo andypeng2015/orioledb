@@ -299,7 +299,7 @@ static void
 append_rowid_values(OIndexDescr *id,
 					TupleDesc pk_tupdesc, OTupleFixedFormatSpec *pk_spec,
 					Datum pkDatum, Datum *values, bool *isnull,
-					CommitSeqNo *csn, uint32 *version)
+					OSnapshot *o_snapshot, uint32 *version)
 {
 	bytea	   *rowid;
 	Pointer		p;
@@ -316,7 +316,7 @@ append_rowid_values(OIndexDescr *id,
 
 		tuple.data = p;
 		tuple.formatFlags = add->flags;
-		*csn = add->csn;
+		o_snapshot->csn = add->csn;
 		*version = o_tuple_get_version(tuple);
 
 		if (id->nPrimaryFields < id->nFields)
@@ -346,7 +346,7 @@ append_rowid_values(OIndexDescr *id,
 		rowid = DatumGetByteaP(pkDatum);
 		p = (Pointer) rowid + MAXALIGN(VARHDRSZ);
 		add = (ORowIdAddendumCtid *) p;
-		*csn = add->csn;
+		o_snapshot->csn = add->csn;
 		*version = add->version;
 		p += MAXALIGN(sizeof(ORowIdAddendumCtid));
 
@@ -399,7 +399,7 @@ orioledb_aminsert(Relation rel, Datum *values, bool *isnull,
 		.modifyCallback = NULL,
 		.needsUndoForSelfCreated = true
 	};
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 	OXid		oxid;
 	TupleTableSlot *slot;
 	uint32		version;
@@ -458,17 +458,17 @@ orioledb_aminsert(Relation rel, Datum *values, bool *isnull,
 						GET_PRIMARY(descr)->nonLeafTupdesc,
 						&GET_PRIMARY(descr)->nonLeafSpec,
 						tupleid, values, isnull,
-						&csn, &version);
+						&o_snapshot, &version);
 
 	tuple = o_form_tuple(index_descr->leafTupdesc, &index_descr->leafSpec, version, values, isnull);
 	slot = index_descr->old_leaf_slot;
-	tts_orioledb_store_tuple(slot, tuple, descr, csn, ix_num, false, NULL);
+	tts_orioledb_store_tuple(slot, tuple, descr, &o_snapshot, ix_num, false, NULL);
 	callbackInfo.arg = slot;
 
-	fill_current_oxid_csn(&oxid, &csn);
+	fill_current_oxid_osnapshot(&oxid, &o_snapshot);
 
 	success = (o_tbl_index_insert(descr, descr->indices[ix_num], &tuple, slot,
-								  oxid, csn, &callbackInfo) == OBTreeModifyResultInserted);
+								  oxid, &o_snapshot, &callbackInfo) == OBTreeModifyResultInserted);
 
 	if (!success)
 	{
@@ -491,7 +491,7 @@ orioledb_amupdate(Relation rel, bool new_valid, bool old_valid,
 	OIndexDescr *index_descr;
 	OTableDescr *descr;
 	OIndexNumber ix_num;
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 	OXid		oxid;
 	TupleTableSlot *new_slot;
 	TupleTableSlot *old_slot;
@@ -531,30 +531,30 @@ orioledb_amupdate(Relation rel, bool new_valid, bool old_valid,
 						GET_PRIMARY(descr)->nonLeafTupdesc,
 						&GET_PRIMARY(descr)->nonLeafSpec,
 						oldTupleid, valuesOld, isnullOld,
-						&csn, &version);
+						&o_snapshot, &version);
 	vfree = palloc0(sizeof(bool) * index_descr->leafTupdesc->natts);
 	/* TODO: Probably there is a better way than detoasting here */
 	detoast_passed_values(index_descr, valuesOld, isnullOld, vfree);
 	old_tuple = o_form_tuple(index_descr->leafTupdesc, &index_descr->leafSpec,
 							 version, valuesOld, isnullOld);
 	old_slot = index_descr->old_leaf_slot;
-	tts_orioledb_store_non_leaf_tuple(old_slot, old_tuple, descr, csn, ix_num, false, NULL);
+	tts_orioledb_store_non_leaf_tuple(old_slot, old_tuple, descr, &o_snapshot, ix_num, false, NULL);
 
 	append_rowid_values(index_descr,
 						GET_PRIMARY(descr)->nonLeafTupdesc,
 						&GET_PRIMARY(descr)->nonLeafSpec,
 						tupleid, values, isnull,
-						&csn, &version);
+						&o_snapshot, &version);
 	new_tuple = o_form_tuple(index_descr->leafTupdesc, &index_descr->leafSpec, version, values, isnull);
 	new_slot = index_descr->new_leaf_slot;
-	tts_orioledb_store_non_leaf_tuple(new_slot, new_tuple, descr, csn, ix_num, false, NULL);
+	tts_orioledb_store_non_leaf_tuple(new_slot, new_tuple, descr, &o_snapshot, ix_num, false, NULL);
 
-	fill_current_oxid_csn(&oxid, &csn);
+	fill_current_oxid_osnapshot(&oxid, &o_snapshot);
 
 	result = o_update_secondary_index(index_descr, ix_num,
 									  new_valid, old_valid,
 									  new_slot, new_tuple,
-									  old_slot, oxid, csn);
+									  old_slot, oxid, &o_snapshot);
 
 	for (i = 0; i < index_descr->leafTupdesc->natts; i++)
 	{
@@ -627,7 +627,7 @@ orioledb_amdelete(Relation rel, Datum *values, bool *isnull,
 	OIndexDescr *index_descr;
 	OTableDescr *descr;
 	OIndexNumber ix_num;
-	CommitSeqNo csn;
+	OSnapshot	o_snapshot;
 	OXid		oxid;
 	uint32		version;
 	TupleTableSlot *slot;
@@ -666,16 +666,16 @@ orioledb_amdelete(Relation rel, Datum *values, bool *isnull,
 						GET_PRIMARY(descr)->nonLeafTupdesc,
 						&GET_PRIMARY(descr)->nonLeafSpec,
 						tupleid, values, isnull,
-						&csn, &version);
+						&o_snapshot, &version);
 	vfree = palloc0(sizeof(bool) * index_descr->nonLeafTupdesc->natts);
 	detoast_passed_values(index_descr, values, isnull, vfree);
 	tuple = o_form_tuple(index_descr->leafTupdesc, &index_descr->leafSpec,
 						 version, values, isnull);
-	tts_orioledb_store_tuple(slot, tuple, descr, csn, ix_num, false, NULL);
+	tts_orioledb_store_tuple(slot, tuple, descr, &o_snapshot, ix_num, false, NULL);
 
-	fill_current_oxid_csn(&oxid, &csn);
+	fill_current_oxid_osnapshot(&oxid, &o_snapshot);
 
-	result = o_tbl_index_delete(index_descr, ix_num, slot, oxid, csn);
+	result = o_tbl_index_delete(index_descr, ix_num, slot, oxid, &o_snapshot);
 	for (i = 0; i < index_descr->nonLeafTupdesc->natts; i++)
 	{
 		if (vfree[i])
@@ -1231,20 +1231,22 @@ orioledb_amrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 }
 
 static void
-fill_hitup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr, CommitSeqNo tupleCsn, BTreeLocationHint *hint)
+fill_hitup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr,
+		   OSnapshot *tuple_o_snapshot, BTreeLocationHint *hint)
 {
 	TupleTableSlot *slot;
 
 	scan->xs_hitupdesc = descr->tupdesc;
 	slot = descr->oldTuple;
-	tts_orioledb_store_tuple(slot, tuple, descr, tupleCsn, PrimaryIndexNumber, false, hint);
+	tts_orioledb_store_tuple(slot, tuple, descr, tuple_o_snapshot, PrimaryIndexNumber, false, hint);
 	scan->xs_rowid.value = slot_getsysattr(slot, RowIdAttributeNumber, &scan->xs_rowid.isnull);
 	scan->xs_hitup = ExecCopySlotHeapTuple(slot);
 }
 
 /* TODO: Rewrite */
 static void
-fill_itup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr, CommitSeqNo tupleCsn, BTreeLocationHint *hint)
+fill_itup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr,
+		  OSnapshot *tuple_o_snapshot, BTreeLocationHint *hint)
 {
 	OScanState *o_scan = (OScanState *) scan;
 	TupleTableSlot *slot;
@@ -1257,7 +1259,7 @@ fill_itup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr, CommitSeqNo tupl
 	Pointer		ptr;
 
 	slot = index_descr->index_slot;
-	tts_orioledb_store_tuple(slot, tuple, descr, tupleCsn, o_scan->ixNum, false, hint);
+	tts_orioledb_store_tuple(slot, tuple, descr, tuple_o_snapshot, o_scan->ixNum, false, hint);
 	slot_getallattrs(slot);
 
 	/*
@@ -1308,7 +1310,7 @@ fill_itup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr, CommitSeqNo tupl
 		ORowIdAddendumCtid addCtid;
 
 		addCtid.hint = *hint;
-		addCtid.csn = tupleCsn;
+		addCtid.csn = tuple_o_snapshot->csn;
 		addCtid.version = oslot->version;
 
 		/* Ctid primary key: give hint + tid as rowid */
@@ -1332,7 +1334,7 @@ fill_itup(IndexScanDesc scan, OTuple tuple, OTableDescr *descr, CommitSeqNo tupl
 		int			i;
 
 		addNonCtid.hint = *hint;
-		addNonCtid.csn = tupleCsn;
+		addNonCtid.csn = tuple_o_snapshot->csn;
 		addNonCtid.flags = tuple.formatFlags;
 
 		/*
@@ -1390,16 +1392,16 @@ orioledb_amgettuple(IndexScanDesc scan, ScanDirection dir)
 	bool		scan_primary;
 	MemoryContext tupleCxt = CurrentMemoryContext;
 	BTreeLocationHint hint = {OInvalidInMemoryBlkno, 0};
-	CommitSeqNo tupleCsn;
+	OSnapshot	tuple_o_snapshot;
 
 	o_scan->scanDir = dir;
 
 	if (scan->xs_snapshot->snapshot_type == SNAPSHOT_DIRTY)
-		o_scan->csn = COMMITSEQNO_INPROGRESS;
+		o_scan->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	else if (scan->xs_snapshot->snapshot_type == SNAPSHOT_NON_VACUUMABLE)
-		o_scan->csn = COMMITSEQNO_NON_DELETED;
+		o_scan->o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 	else
-		o_scan->csn = scan->xs_snapshot->csnSnapshotData.snapshotcsn;
+		o_scan->o_snapshot.csn = scan->xs_snapshot->csnSnapshotData.snapshotcsn;
 
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;
@@ -1426,7 +1428,7 @@ orioledb_amgettuple(IndexScanDesc scan, ScanDirection dir)
 	descr = relation_get_descr(scan->heapRelation);
 	scan_primary = o_scan->ixNum == PrimaryIndexNumber || !scan->xs_want_itup;
 
-	tuple = o_index_scan_getnext(descr, o_scan, &tupleCsn, scan_primary,
+	tuple = o_index_scan_getnext(descr, o_scan, &tuple_o_snapshot, scan_primary,
 								 tupleCxt, &hint);
 
 	if (O_TUPLE_IS_NULL(tuple))
@@ -1437,9 +1439,9 @@ orioledb_amgettuple(IndexScanDesc scan, ScanDirection dir)
 	else
 	{
 		if (scan->xs_want_itup)
-			fill_itup(scan, tuple, descr, tupleCsn, &hint);
+			fill_itup(scan, tuple, descr, &tuple_o_snapshot, &hint);
 		else
-			fill_hitup(scan, tuple, descr, tupleCsn, &hint);
+			fill_hitup(scan, tuple, descr, &tuple_o_snapshot, &hint);
 		res = true;
 	}
 	return res;

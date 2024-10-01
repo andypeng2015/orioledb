@@ -475,6 +475,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 											 buf->origptr + (ptr - startPtr),
 											 snap);
 				snap->active_count++;
+				snap->csnSnapshotData.xlogptr = record->ReadRecPtr;
 			}
 
 
@@ -594,8 +595,10 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 						}
 						else	/* Tuple without TOASTed attrs */
 						{
+							OSnapshot	o_snapshot;
+							o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 							tts_orioledb_store_tuple(descr->newTuple, tuple.tuple,
-													 descr, COMMITSEQNO_INPROGRESS,
+													 descr, &o_snapshot,
 													 PrimaryIndexNumber, false,
 													 NULL);
 							change->data.tp.newtuple = record_buffer_tuple_slot(ctx->reorder, descr->newTuple);
@@ -642,8 +645,10 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					}
 					else		/* Tuple without TOASTed attrs */
 					{
+						OSnapshot	o_snapshot;
+						o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 						tts_orioledb_store_tuple(descr->newTuple, tuple.tuple,
-												 descr, COMMITSEQNO_INPROGRESS,
+												 descr, &o_snapshot,
 												 PrimaryIndexNumber, false,
 												 NULL);
 
@@ -673,9 +678,11 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					elog(DEBUG4, "reloid: %u", cur_oids.reloid);
 					if (ix_type == oIndexToast)
 					{
+						OSnapshot	temp_o_snapshot;
 						change->data.tp.clear_toast_afterwards = false;
+						temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 						tts_orioledb_store_non_leaf_tuple(descr->oldTuple, tuple.tuple,
-														  descr, COMMITSEQNO_INPROGRESS,
+														  descr, &temp_o_snapshot,
 														  PrimaryIndexNumber, false,
 														  NULL);
 						change->data.tp.oldtuple = record_buffer_tuple_slot(ctx->reorder, descr->oldTuple);
@@ -697,8 +704,10 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 						}
 						else	/* Tuple without TOASTed attrs */
 						{
+							OSnapshot	temp_o_snapshot;
+							temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 							tts_orioledb_store_non_leaf_tuple(descr->oldTuple, tuple.tuple,
-															  descr, COMMITSEQNO_INPROGRESS,
+															  descr, &temp_o_snapshot,
 															  PrimaryIndexNumber, false,
 															  NULL);
 							change->data.tp.oldtuple = record_buffer_tuple_slot(ctx->reorder, descr->oldTuple);

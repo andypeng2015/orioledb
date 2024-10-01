@@ -203,7 +203,7 @@ switch_to_next_range(OIndexDescr *indexDescr, OScanState *ostate,
 				 ? &ostate->curKeyRange.low
 				 : &ostate->curKeyRange.high);
 		ostate->iterator = o_btree_iterator_create(&indexDescr->desc, (Pointer) bound,
-												   BTreeKeyBound, ostate->csn,
+												   BTreeKeyBound, &ostate->o_snapshot,
 												   ostate->scanDir);
 		o_btree_iterator_set_tuple_ctx(ostate->iterator, tupleCxt);
 	}
@@ -215,7 +215,7 @@ switch_to_next_range(OIndexDescr *indexDescr, OScanState *ostate,
 
 OTuple
 o_iterate_index(OIndexDescr *indexDescr, OScanState *ostate,
-				CommitSeqNo *tupleCsn, MemoryContext tupleCxt,
+				OSnapshot *tuple_o_snapshot, MemoryContext tupleCxt,
 				BTreeLocationHint *hint)
 {
 	OTuple		tup = {0};
@@ -242,8 +242,8 @@ o_iterate_index(OIndexDescr *indexDescr, OScanState *ostate,
 
 			tup = o_btree_find_tuple_by_key(&indexDescr->desc,
 											&ostate->curKeyRange.low,
-											BTreeKeyBound, ostate->csn,
-											tupleCsn, tupleCxt, hint);
+											BTreeKeyBound, &ostate->o_snapshot,
+											tuple_o_snapshot, tupleCxt, hint);
 			if (!O_TUPLE_IS_NULL(tup))
 				tup_fetched = true;
 		}
@@ -254,7 +254,7 @@ o_iterate_index(OIndexDescr *indexDescr, OScanState *ostate,
 
 			do
 			{
-				tup = o_btree_iterator_fetch(ostate->iterator, tupleCsn,
+				tup = o_btree_iterator_fetch(ostate->iterator, tuple_o_snapshot,
 											 bound, BTreeKeyBound,
 											 true, hint);
 
@@ -287,7 +287,7 @@ o_iterate_index(OIndexDescr *indexDescr, OScanState *ostate,
 
 OTuple
 o_index_scan_getnext(OTableDescr *descr, OScanState *ostate,
-					 CommitSeqNo *tupleCsn, bool scan_primary,
+					 OSnapshot *tuple_o_snapshot, bool scan_primary,
 					 MemoryContext tupleCxt, BTreeLocationHint *hint)
 {
 	OIndexDescr *id = descr->indices[ostate->ixNum];
@@ -296,7 +296,7 @@ o_index_scan_getnext(OTableDescr *descr, OScanState *ostate,
 	o_btree_load_shmem(&id->desc);
 	while (true)
 	{
-		tup = o_iterate_index(id, ostate, tupleCsn, tupleCxt,
+		tup = o_iterate_index(id, ostate, tuple_o_snapshot, tupleCxt,
 							  ostate->ixNum == PrimaryIndexNumber ? hint : NULL);
 
 		if (!scan_primary || O_TUPLE_IS_NULL(tup))
@@ -324,7 +324,7 @@ o_index_scan_getnext(OTableDescr *descr, OScanState *ostate,
 			o_btree_load_shmem(&primary->desc);
 			ptup = o_btree_find_tuple_by_key(&primary->desc,
 											 (Pointer) &bound, BTreeKeyBound,
-											 ostate->csn, tupleCsn,
+											 &ostate->o_snapshot, tuple_o_snapshot,
 											 tupleCxt, hint);
 			pfree(tup.data);
 			tup = ptup;
