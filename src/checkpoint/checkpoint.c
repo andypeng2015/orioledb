@@ -1276,7 +1276,7 @@ o_perform_checkpoint(XLogRecPtr redo_pos, int flags)
 		pg_atomic_write_u64(&my_proc_info->undoRetainLocations[i].snapshotRetainUndoLocation, InvalidUndoLocation);
 
 	control.lastCheckpointNumber = checkpoint_state->lastCheckpointNumber;
-	control.lastCSN = pg_atomic_read_u64(&ShmemVariableCache->nextCommitSeqNo);
+	control.lastCSN = pg_atomic_read_u64(&TRANSAM_VARIABLES->nextCommitSeqNo);
 	control.lastXid = pg_atomic_read_u64(&xid_meta->nextXid);
 	control.sysTreesStartPtr = checkpoint_state->sysTreesStartPtr;
 	control.replayStartPtr = checkpoint_state->replayStartPtr;

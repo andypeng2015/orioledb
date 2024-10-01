@@ -1335,7 +1335,7 @@ undo_xact_callback(XactEvent event, void *arg)
 				current_oxid_precommit();
 				csn = GetCurrentCSN();
 				if (csn == COMMITSEQNO_INPROGRESS)
-					csn = pg_atomic_fetch_add_u64(&ShmemVariableCache->nextCommitSeqNo, 1);
+					csn = pg_atomic_fetch_add_u64(&TRANSAM_VARIABLES->nextCommitSeqNo, 1);
 				current_oxid_commit(csn);
 
 				for (i = 0; i < (int) UndoLogsCount; i++)
@@ -1617,7 +1617,7 @@ void
 report_undo_overflow(void)
 {
 	ereport(ERROR,
-			(errcode(ERRCODE_SNAPSHOT_TOO_OLD),
+			(errcode(ERRCODE_INTERNAL_ERROR),
 			 errmsg("failed to add an undo record: undo size is exceeded")));
 }
 
@@ -1715,7 +1715,7 @@ finish_autonomous_transaction(OAutonomousTxState *state)
 				   get_current_logical_next_xid());
 
 		current_oxid_precommit();
-		csn = pg_atomic_fetch_add_u64(&ShmemVariableCache->nextCommitSeqNo, 1);
+		csn = pg_atomic_fetch_add_u64(&TRANSAM_VARIABLES->nextCommitSeqNo, 1);
 		current_oxid_commit(csn);
 
 		for (i = 0; i < (int) UndoLogsCount; i++)
@@ -1941,7 +1941,7 @@ orioledb_snapshot_hook(Snapshot snapshot)
 	 */
 	pg_read_barrier();
 
-	snapshot->csnSnapshotData.snapshotcsn = pg_atomic_read_u64(&ShmemVariableCache->nextCommitSeqNo);
+	snapshot->csnSnapshotData.snapshotcsn = pg_atomic_read_u64(&TRANSAM_VARIABLES->nextCommitSeqNo);
 }
 
 static void

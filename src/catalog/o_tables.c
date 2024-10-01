@@ -1426,8 +1426,6 @@ orioledb_table_oids(PG_FUNCTION_ARGS)
 	o_tables_foreach_oids(o_table_oids_array_callback,
 						  COMMITSEQNO_NON_DELETED, rsinfo);
 
-	tuplestore_donestoring(tupstore);
-
 	return (Datum) 0;
 }
 
@@ -1595,7 +1593,9 @@ o_table_tupdesc_init_entry(TupleDesc desc, AttrNumber att_num, char *name,
 	else if (name != NameStr(att->attname))
 		namestrcpy(&(att->attname), name);
 
+#if PG_VERSION_NUM < 170000
 	att->attstattarget = -1;
+#endif
 	att->attcacheoff = -1;
 	att->atttypmod = field->typmod;
 

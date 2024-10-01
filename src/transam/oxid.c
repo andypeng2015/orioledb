@@ -231,7 +231,7 @@ oxid_init_shmem(Pointer ptr, bool found)
 static TransactionId
 acquire_logical_xid(void)
 {
-	int			i = MyProc->pgprocno,
+	int			i = MyProc->PROCNUMBER,
 				mynum = 0;
 	int			nloops = 0;
 	TransactionId result;
@@ -652,8 +652,8 @@ oxid_notify(OXid oxid)
 
 	procnum = COMMITSEQNO_GET_PROCNUM(csn);
 	proc = GetPGProcByNumber(procnum);
-	vxid.localTransactionId = MyProc->lxid;
-	vxid.backendId = MyBackendId;
+	vxid.localTransactionId = MyProc->LXID;
+	vxid.BACKENDID = MyBackendId;
 
 	/* ensure that it is waiting for us */
 	SET_LOCKTAG_VIRTUALTRANSACTION(tag, vxid);
@@ -666,7 +666,7 @@ oxid_notify(OXid oxid)
 		proc->waitLock->tag.locktag_field4 == tag.locktag_field4 &&
 		proc->waitLock->tag.locktag_lockmethodid == tag.locktag_lockmethodid &&
 		proc->waitLock->tag.locktag_type == tag.locktag_type &&
-		oProcData[proc->pgprocno].waitingForOxid)
+		oProcData[proc->PROCNUMBER].waitingForOxid)
 	{
 		/*
 		 * It's a hack. We can not just release lock because VirtualXactLock()
@@ -683,7 +683,7 @@ oxid_notify(OXid oxid)
 		LWLockAcquire(partitionLock, LW_EXCLUSIVE);
 		RemoveFromWaitQueue(proc, hashcode);
 		proc->waitStatus = STATUS_OK;
-		SendProcSignal(proc->pid, PROCSIG_NOTIFY_INTERRUPT, proc->backendId);
+		SendProcSignal(proc->pid, PROCSIG_NOTIFY_INTERRUPT, proc->PROCBACKENDID);
 
 		LWLockRelease(partitionLock);
 	}
@@ -736,8 +736,8 @@ oxid_notify_all(void)
 	int			i;
 #endif
 
-	vxid.localTransactionId = MyProc->lxid;
-	vxid.backendId = MyBackendId;
+	vxid.localTransactionId = MyProc->LXID;
+	vxid.BACKENDID = MyBackendId;
 
 	/* ensure that it is waiting for us */
 	SET_LOCKTAG_VIRTUALTRANSACTION(tag, vxid);
@@ -798,7 +798,7 @@ oxid_notify_all(void)
 			proc->waitLock->tag.locktag_field4 == tag.locktag_field4 &&
 			proc->waitLock->tag.locktag_lockmethodid == tag.locktag_lockmethodid &&
 			proc->waitLock->tag.locktag_type == tag.locktag_type &&
-			oProcData[proc->pgprocno].waitingForOxid)
+			oProcData[proc->PROCNUMBER].waitingForOxid)
 		{
 			procs = lappend(procs, proc);
 		}
@@ -813,7 +813,7 @@ oxid_notify_all(void)
 		proc = lfirst(lc);
 		RemoveFromWaitQueue(proc, hashcode);
 		proc->waitStatus = STATUS_OK;
-		SendProcSignal(proc->pid, PROCSIG_NOTIFY_INTERRUPT, proc->backendId);
+		SendProcSignal(proc->pid, PROCSIG_NOTIFY_INTERRUPT, proc->PROCBACKENDID);
 	}
 
 	LWLockRelease(partitionLock);
@@ -1055,21 +1055,21 @@ get_current_oxid(void)
 		vxidElem = &GET_CUR_PROCDATA()->vxids[nestingLevel];
 
 		vxidElem->oxid = newOxid;
-		vxidElem->vxid.backendId = MyProc->backendId;
-		vxidElem->vxid.localTransactionId = MyProc->lxid;
+		vxidElem->vxid.BACKENDID = MyProc->PROCBACKENDID;
+		vxidElem->vxid.localTransactionId = MyProc->LXID;
 
 		Assert(pg_atomic_read_u64(&xidBuffer[newOxid % xid_circular_buffer_size].csn) == COMMITSEQNO_FROZEN);
 		pg_atomic_write_u64(&xidBuffer[newOxid % xid_circular_buffer_size].csn,
-							COMMITSEQNO_MAKE_SPECIAL(MyProc->pgprocno,
+							COMMITSEQNO_MAKE_SPECIAL(MyProc->PROCNUMBER,
 													 nestingLevel,
 													 COMMITSEQNO_STATUS_IN_PROGRESS));
 		pg_atomic_write_u64(&xidBuffer[newOxid % xid_circular_buffer_size].commitPtr,
-							XLOG_PTR_MAKE_SPECIAL(MyProc->pgprocno,
+							XLOG_PTR_MAKE_SPECIAL(MyProc->PROCNUMBER,
 												  nestingLevel,
 												  COMMITSEQNO_STATUS_IN_PROGRESS));
 		curOxid = newOxid;
 		logicalXid = acquire_logical_xid();
-		logicalNextXid = XidFromFullTransactionId(ShmemVariableCache->nextXid);
+		logicalNextXid = XidFromFullTransactionId(TRANSAM_VARIABLES->nextXid);
 	}
 
 	return curOxid;
@@ -1105,7 +1105,7 @@ parallel_worker_set_oxid(void)
 
 	Assert(MyProc->lockGroupLeader);
 
-	leaderProcData = &oProcData[MyProc->lockGroupLeader->pgprocno];
+	leaderProcData = &oProcData[MyProc->lockGroupLeader->PROCNUMBER];
 	vxidElem = &leaderProcData->vxids[leaderProcData->autonomousNestingLevel];
 
 	curOxid = vxidElem->oxid;
@@ -1148,7 +1148,7 @@ current_oxid_precommit(void)
 	if (!OXidIsValid(curOxid))
 		return;
 
-	set_oxid_csn(curOxid, COMMITSEQNO_MAKE_SPECIAL(MyProc->pgprocno,
+	set_oxid_csn(curOxid, COMMITSEQNO_MAKE_SPECIAL(MyProc->PROCNUMBER,
 												   GET_CUR_PROCDATA()->autonomousNestingLevel,
 												   COMMITSEQNO_STATUS_CSN_COMMITTING));
 
@@ -1161,7 +1161,7 @@ current_oxid_xlog_precommit(void)
 	if (!OXidIsValid(curOxid))
 		return;
 
-	set_oxid_xlog_ptr(curOxid, COMMITSEQNO_MAKE_SPECIAL(MyProc->pgprocno,
+	set_oxid_xlog_ptr(curOxid, COMMITSEQNO_MAKE_SPECIAL(MyProc->PROCNUMBER,
 														GET_CUR_PROCDATA()->autonomousNestingLevel,
 														XLOG_PTR_COMMITTING));
 
@@ -1222,7 +1222,7 @@ release_assigned_logical_xids(void)
 void
 current_oxid_commit(CommitSeqNo csn)
 {
-	ODBProcData *my_proc_info = &oProcData[MyProc->pgprocno];
+	ODBProcData *my_proc_info = &oProcData[MyProc->PROCNUMBER];
 
 	pg_atomic_write_u64(&my_proc_info->xmin, InvalidOXid);
 
@@ -1242,7 +1242,7 @@ current_oxid_commit(CommitSeqNo csn)
 void
 current_oxid_abort(void)
 {
-	ODBProcData *my_proc_info = &oProcData[MyProc->pgprocno];
+	ODBProcData *my_proc_info = &oProcData[MyProc->PROCNUMBER];
 
 	pg_atomic_write_u64(&my_proc_info->xmin, InvalidOXid);
 
