@@ -795,7 +795,6 @@ o_sys_cache_update(OSysCache *sys_cache, Pointer updated_entry)
 	OSysCacheKey *sys_cache_key;
 	BTreeDescr *desc = get_sys_tree(sys_cache->sys_tree_num);
 	OSysCacheBound bound = {.nkeys = sys_cache->nkeys};
-	OSnapshot	temp_o_snapshot;
 
 	sys_cache_key = (OSysCacheKey *) updated_entry;
 	bound.key = sys_cache_key;
@@ -803,6 +802,7 @@ o_sys_cache_update(OSysCache *sys_cache, Pointer updated_entry)
 	if (!sys_cache->is_toast)
 	{
 		OAutonomousTxState state;
+		OSnapshot	temp_o_snapshot;
 		OTuple		tup;
 
 		tup.formatFlags = 0;
@@ -847,6 +847,7 @@ o_sys_cache_update(OSysCache *sys_cache, Pointer updated_entry)
 		PG_TRY();
 		{
 			OSnapshot	temp_o_snapshot;
+
 			temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 			result = generic_toast_update(&oSysCacheToastAPI,
 										  (Pointer) &toast_key,
@@ -999,12 +1000,13 @@ o_sys_cache_delete_by_lsn(OSysCache *sys_cache, XLogRecPtr lsn)
 				start_autonomous_transaction(&state);
 				PG_TRY();
 				{
-					OSnapshot o_snapshot;
-					o_snapshot.csn = COMMITSEQNO_NON_DELETED;
+					OSnapshot	o_tmp_snapshot;
+
+					o_tmp_snapshot.csn = COMMITSEQNO_NON_DELETED;
 					result = generic_toast_delete(&oSysCacheToastAPI,
 												  (Pointer) &toast_key,
 												  get_current_oxid(),
-												  &o_snapshot,
+												  &o_tmp_snapshot,
 												  td);
 				}
 				PG_CATCH();

@@ -381,7 +381,7 @@ o_exec_bitmap_fetch(OBitmapScan *scan, CustomScanState *node)
 		OTuple		tuple;
 		BTreeLocationHint hint;
 		MemoryContext tupleCxt = node->ss.ss_ScanTupleSlot->tts_mcxt;
-		OSnapshot tuple_o_snapshot;
+		OSnapshot	tuple_o_snapshot;
 
 		tuple = btree_seq_scan_getnext(scan->seq_scan, tupleCxt, &tuple_o_snapshot,
 									   &hint);

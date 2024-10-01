@@ -306,7 +306,7 @@ free_extent(BTreeDescr *desc, FileExtent extent)
 
 	while (!inserted)
 	{
-		OSnapshot o_snapshot;
+		OSnapshot	o_snapshot;
 
 		/* reset status */
 		tup.extent.length = 0;
@@ -490,7 +490,7 @@ foreach_free_extent(BTreeDescr *desc, ForEachExtentCallback callback, void *arg)
 	OTuple		tmpTup;
 	OTuple		toTup;
 	OTuple		fromTup;
-	OSnapshot o_snapshot;
+	OSnapshot	o_snapshot;
 
 	enable_stopevents = false;
 

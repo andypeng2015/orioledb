@@ -507,7 +507,7 @@ orioledb_tuple_update(Relation relation, Datum tupleid, TupleTableSlot *slot,
 	OTableDescr *descr;
 	OXid		oxid;
 	BTreeLocationHint hint;
-	OSnapshot o_snapshot;
+	OSnapshot	o_snapshot;
 
 	if (snapshot)
 		o_snapshot.csn = snapshot->csnSnapshotData.snapshotcsn;

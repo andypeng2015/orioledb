@@ -2674,7 +2674,7 @@ replay_container(Pointer startPtr, Pointer endPtr,
 
 			if (sys_tree_num > 0 && xlogRecPtr >= checkpoint_state->sysTreesStartPtr)
 			{
-				OSnapshot o_snapshot;
+				OSnapshot	o_snapshot;
 
 				Assert(sys_tree_supports_transactions(sys_tree_num));
 				recovery_switch_to_oxid(oxid, -1);

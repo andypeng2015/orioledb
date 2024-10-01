@@ -252,7 +252,7 @@ o_enum_cache_delete_all(Oid datoid, Oid enum_oid)
 	OSysCacheKey2 key = {0};
 	OSysCacheBound bound = {.key = (OSysCacheKey *) &key,
 	.nkeys = 1};
-	OSnapshot o_snapshot;
+	OSnapshot	o_snapshot;
 
 	o_sys_cache_set_datoid_lsn(&key.common.lsn, &key.common.datoid);
 	key.keys[0] = ObjectIdGetDatum(enum_oid);

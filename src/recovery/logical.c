@@ -596,6 +596,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 						else	/* Tuple without TOASTed attrs */
 						{
 							OSnapshot	o_snapshot;
+
 							o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 							tts_orioledb_store_tuple(descr->newTuple, tuple.tuple,
 													 descr, &o_snapshot,
@@ -646,6 +647,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					else		/* Tuple without TOASTed attrs */
 					{
 						OSnapshot	o_snapshot;
+
 						o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 						tts_orioledb_store_tuple(descr->newTuple, tuple.tuple,
 												 descr, &o_snapshot,
@@ -679,6 +681,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					if (ix_type == oIndexToast)
 					{
 						OSnapshot	temp_o_snapshot;
+
 						change->data.tp.clear_toast_afterwards = false;
 						temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 						tts_orioledb_store_non_leaf_tuple(descr->oldTuple, tuple.tuple,
@@ -705,6 +708,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 						else	/* Tuple without TOASTed attrs */
 						{
 							OSnapshot	temp_o_snapshot;
+
 							temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 							tts_orioledb_store_non_leaf_tuple(descr->oldTuple, tuple.tuple,
 															  descr, &temp_o_snapshot,

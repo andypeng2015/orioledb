@@ -657,6 +657,7 @@ o_btree_iterator_fetch_internal(BTreeIterator *it, OSnapshot *tuple_o_snapshot)
 			if (cmp <= 0)
 			{
 				CommitSeqNo *tupleCsn = tuple_o_snapshot ? &tuple_o_snapshot->csn : NULL;
+
 				result = o_find_tuple_version(desc, img,
 											  &leaf_item->locator,
 											  it->csn, tupleCsn, it->tupleCxt,
@@ -676,6 +677,7 @@ o_btree_iterator_fetch_internal(BTreeIterator *it, OSnapshot *tuple_o_snapshot)
 			else
 			{
 				CommitSeqNo *tupleCsn = tuple_o_snapshot ? &tuple_o_snapshot->csn : NULL;
+
 				result = o_find_tuple_version(desc, hImg,
 											  &it->undoLoc,
 											  it->csn, tupleCsn, it->tupleCxt,
@@ -691,6 +693,7 @@ o_btree_iterator_fetch_internal(BTreeIterator *it, OSnapshot *tuple_o_snapshot)
 		else
 		{
 			CommitSeqNo *tupleCsn = tuple_o_snapshot ? &tuple_o_snapshot->csn : NULL;
+
 			result = o_find_tuple_version(desc, context->img,
 										  &leaf_item->locator,
 										  it->csn, tupleCsn,

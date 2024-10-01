@@ -505,7 +505,7 @@ static void
 scan_make_iterator(BTreeSeqScan *scan, OTuple keyRangeLow, OTuple keyRangeHigh)
 {
 	MemoryContext mctx;
-	OSnapshot o_snapshot;
+	OSnapshot	o_snapshot;
 
 	o_snapshot.csn = scan->snapshotCsn;
 

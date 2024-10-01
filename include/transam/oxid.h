@@ -42,10 +42,11 @@ typedef struct
 
 extern XidMeta *xid_meta;
 
-typedef struct OSnapshot {
-	CommitSeqNo	   csn;
-	XLogRecPtr	   xlogptr;
-	XLogRecPtr	   xmin;
+typedef struct OSnapshot
+{
+	CommitSeqNo csn;
+	XLogRecPtr	xlogptr;
+	XLogRecPtr	xmin;
 } OSnapshot;
 
 extern Size oxid_shmem_needs(void);

@@ -1417,7 +1417,7 @@ orioledb_table_oids(PG_FUNCTION_ARGS)
 	Tuplestorestate *tupstore;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
-	OSnapshot	  o_snapshot;
+	OSnapshot	o_snapshot;
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
