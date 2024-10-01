@@ -23,7 +23,8 @@ typedef enum
 	S3TaskTypeWriteWALFile,
 	S3TaskTypeWriteUndoFile,
 	S3TaskTypeWriteEmptyDir,
-	S3TaskTypeWriteRootFile
+	S3TaskTypeWriteRootFile,
+	S3TaskTypeWritePGFile
 } S3TaskType;
 
 /*
@@ -85,6 +86,8 @@ extern S3TaskLocation s3_schedule_undo_file_write(uint64 fileNum);
 extern S3TaskLocation s3_schedule_downlink_load(struct BTreeDescr *desc,
 												uint64 downlink);
 extern S3TaskLocation s3_schedule_root_file_write(char *filename, bool delete);
+extern S3TaskLocation s3_schedule_pg_file_write(uint32 chkpNum, char *filename,
+												bool delete);
 extern void s3_load_file_part(uint32 chkpNum, Oid datoid, Oid relnode,
 							  int32 segNum, int32 partNum);
 extern void s3_load_map_file(uint32 chkpNum, Oid datoid, Oid relnode);

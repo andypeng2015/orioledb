@@ -463,8 +463,8 @@ write_file_part(const char *filename, uint64 offset,
 /*
  * Read the whole file.
  */
-static Pointer
-read_file(const char *filename, uint64 *size)
+Pointer
+s3_read_file(const char *filename, uint64 *size)
 {
 	return read_file_part(filename, 0, UINT64_MAX, size);
 }
@@ -483,7 +483,7 @@ write_file(const char *filename, Pointer data, uint64 size)
  *
  * Returns HTTP status code.
  */
-static long
+long
 s3_put_object_with_contents(char *objectname, Pointer data, uint64 dataSize,
 							bool ifNoneMatch)
 {
@@ -597,7 +597,7 @@ s3_put_file(char *objectname, char *filename, bool ifNoneMatch)
 	Pointer		data;
 	uint64		dataSize = 0;
 
-	data = read_file(filename, &dataSize);
+	data = s3_read_file(filename, &dataSize);
 	if (data)
 		return s3_put_object_with_contents(objectname, data, dataSize, ifNoneMatch);
 	return -1;

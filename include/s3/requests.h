@@ -23,7 +23,11 @@ extern void s3_get_file(char *objectname, char *filename);
 extern void s3_put_empty_dir(char *objectname);
 extern long s3_put_file_part(char *objectname, char *filename, int partnum);
 extern void s3_get_file_part(char *objectname, char *filename, int partnum);
+extern long s3_put_object_with_contents(char *objectname, Pointer data,
+										uint64 dataSize, bool ifNoneMatch);
 extern long s3_get_object(char *objectname, StringInfo str, bool missing_ok);
 extern void s3_delete_object(char *objectname);
+
+extern Pointer s3_read_file(const char *filename, uint64 *size);
 
 #endif							/* __S3_REQUESTS_H__ */

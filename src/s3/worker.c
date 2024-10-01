@@ -21,6 +21,9 @@
 #include "s3/worker.h"
 
 #include "access/xlog_internal.h"
+#include "common/hashfn.h"
+#include "common/string.h"
+#include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/bgwriter.h"
@@ -37,8 +40,16 @@
 
 #include <unistd.h>
 
+#define PGDATA_CRC_FILENAME			ORIOLEDB_DATA_DIR "/pgdata.crc"
+
 static volatile sig_atomic_t shutdown_requested = false;
 static volatile S3TaskLocation *workers_locations = NULL;
+
+static HTAB		   *pgdata_hash = NULL;
+static StringInfo	pgdata_crc_buf = NULL;
+
+static HTAB *init_pgdata_hash(void);
+static bool check_pgdata_file_changed(S3Task *task, Pointer new_data, uint64 size);
 
 Size
 s3_workers_shmem_needs(void)
@@ -96,7 +107,8 @@ s3process_task(uint64 taskLocation)
 	S3Task	   *task = (S3Task *) s3_queue_get_task(taskLocation);
 	char	   *objectname;
 
-	if (task->type == S3TaskTypeWriteFile)
+	if (task->type == S3TaskTypeWriteFile ||
+		task->type == S3TaskTypeWritePGFile)
 	{
 		char	   *filename = task->typeSpecific.writeFile.filename;
 		long		result;
@@ -581,6 +593,35 @@ s3_schedule_root_file_write(char *filename, bool delete)
 	return location;
 }
 
+/*
+ * Schedule a synchronization of given PGDATA file to S3.
+ */
+S3TaskLocation
+s3_schedule_pg_file_write(uint32 chkpNum, char *filename, bool delete)
+{
+	S3Task	   *task;
+	int			filenameLen,
+				taskLen;
+	S3TaskLocation location;
+
+	filenameLen = strlen(filename);
+	taskLen = INTALIGN(offsetof(S3Task, typeSpecific.writeFile.filename) + filenameLen + 1);
+	task = (S3Task *) palloc0(taskLen);
+	task->type = S3TaskTypeWritePGFile;
+	task->typeSpecific.writeFile.chkpNum = chkpNum;
+	task->typeSpecific.writeFile.delete = delete;
+	memcpy(task->typeSpecific.writeFile.filename, filename, filenameLen + 1);
+
+	location = s3_queue_put_task((Pointer) task, taskLen);
+
+	elog(DEBUG1, "S3 schedule PGDATA file write: %s %u %u (%llu)",
+		 filename, chkpNum, delete ? 1 : 0, (unsigned long long) location);
+
+	pfree(task);
+
+	return location;
+}
+
 void
 s3_load_file_part(uint32 chkpNum, Oid datoid, Oid relnode,
 				  int32 segNum, int32 partNum)
@@ -695,4 +736,144 @@ s3worker_main(Datum main_arg)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+}
+
+/*
+ * Read the file name and its checksum from the provided line buffer.
+ * The line format is "file_name:file_crc".
+ */
+static bool
+read_file_hash(StringInfo buf, char *file_name, uint64 *file_crc)
+{
+	char	   *separator;
+
+	/* If the line is empty, just skip it */
+	if (buf->len == 0)
+		return false;
+
+	separator = strchr(buf->data, ':');
+	if (separator == NULL)
+		ereport(FATAL,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("the line of the hash file \"%s\" is in wrong format: %s",
+						PGDATA_CRC_FILENAME, buf->data)));
+
+	*separator = '\0';
+	
+	strncpy(file_name, buf->data, MAXPGPATH);
+	*file_crc = pg_strtoint64(separator + 1);
+
+	return true;
+}
+
+/*
+ * Initialize a hash table to store checksums of PGDATA files.
+ */
+static HTAB *
+init_pgdata_hash(void)
+{
+	FILE	   *crc_file;
+	StringInfoData buf;
+	HASHCTL		ctl;
+	HTAB	   *hash;
+	
+	crc_file = AllocateFile(PGDATA_CRC_FILENAME, "r");
+	if (crc_file == NULL)
+	{
+		if (errno != ENOENT)
+			ereport(FATAL,
+					(errcode_for_file_access(),
+					 errmsg("could not open file \"%s\": %m", PGDATA_CRC_FILENAME)));
+
+		/* In case of the file is missing just return NULL */
+		return NULL;
+	}
+
+	MemSet(&ctl, 0, sizeof(ctl));
+	ctl.keysize = MAXPGPATH;
+	ctl.entrysize = sizeof(uint64);
+	ctl.hcxt = CurTransactionContext;
+
+	hash = hash_create("pgdata hash",
+					   32,		/* arbitrary initial size */
+					   &ctl,
+					   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	initStringInfo(&buf);
+
+	while (!feof(crc_file) && !ferror(crc_file))
+	{
+		while (pg_get_line_buf(crc_file, &buf))
+		{
+			char		file_name[MAXPGPATH];
+			uint64		file_crc;
+			uint64	   *entry;
+			bool		found;
+
+			MemSet(file_name, 0, sizeof(file_name));
+
+			/* Strip trailing newline */
+			buf.len = pg_strip_crlf(buf.data);
+
+			if (!read_file_hash(&buf, file_name, &file_crc))
+				continue;
+
+			entry = (uint64 *) hash_search(hash, file_name, HASH_ENTER, &found);
+			/* Normally we shouldn't have duplicate keys in the file */
+			if (found)
+				ereport(FATAL,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("the file name is duplicated in the hash file \"%s\": %s",
+								PGDATA_CRC_FILENAME, file_name)));
+
+			*entry = file_crc;
+		}
+	}
+
+	FreeFile(crc_file);
+
+	return hash;
+}
+
+/*
+ * Check if a PGDATA file changed since last checkpoint.  If pgdata_hash wasn't
+ * initialize before initialize it.
+ *
+ * The function won't re-read the file
+ *
+ * Returns false if the file didn't change.
+ */
+static bool
+check_pgdata_file_changed(S3Task *task, Pointer new_data, uint64 size)
+{
+	char	   *file_name = task->typeSpecific.writeFile.filename;
+	uint64		prev_crc = 0;
+	uint64		cur_crc;
+
+	Assert(task->type == S3TaskTypeWritePGFile);
+
+	if (pgdata_hash == NULL)
+		pgdata_hash = init_pgdata_hash();
+
+	if (pgdata_hash != NULL)
+	{
+		char		key[MAXPGPATH];
+		uint64	   *entry;
+
+		MemSet(key, 0, sizeof(key));
+		strncpy(key, file_name, MAXPGPATH);
+
+		entry = (uint64 *) hash_search(pgdata_hash, key, HASH_FIND, NULL);
+		if (entry != NULL)
+			prev_crc = *entry;
+	}
+
+	cur_crc = hash_bytes_extended((const unsigned char *) new_data, size, 0);
+
+	if (pgdata_crc_buf == NULL)
+		pgdata_crc_buf = makeStringInfo();
+
+	appendStringInfo(pgdata_crc_buf, "%s:" UINT64_FORMAT, file_name, cur_crc);
+
+	return prev_crc != cur_crc;
 }
