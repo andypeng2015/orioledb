@@ -464,7 +464,7 @@ write_file_part(const char *filename, uint64 offset,
  * Read the whole file.
  */
 Pointer
-s3_read_file(const char *filename, uint64 *size)
+read_file(const char *filename, uint64 *size)
 {
 	return read_file_part(filename, 0, UINT64_MAX, size);
 }
@@ -596,7 +596,7 @@ s3_put_file(char *objectname, char *filename, bool ifNoneMatch)
 	uint64		dataSize = 0;
 	long		res = -1;
 
-	data = s3_read_file(filename, &dataSize);
+	data = read_file(filename, &dataSize);
 	if (data)
 	{
 		res = s3_put_object_with_contents(objectname, data, dataSize, ifNoneMatch);

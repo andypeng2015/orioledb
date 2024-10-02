@@ -282,6 +282,13 @@ s3_perform_backup(int flags, S3TaskLocation maxLocation)
 
 	pfree(tablespaceMapData.data);
 	s3_queue_wait_for_location(maxLocation);
+
+	/* Signal S3 workers that they need to flush PGDATA files checksums */
+	for (int i = 0; i < s3_num_workers; i++)
+		s3_worker_flush(i);
+
+	/* Wait until all S3 workers finish flushing */
+	s3_workers_wait_for_flush();
 }
 
 static int64

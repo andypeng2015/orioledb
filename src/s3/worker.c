@@ -24,10 +24,12 @@
 #include "common/hashfn.h"
 #include "common/string.h"
 #include "lib/stringinfo.h"
+#include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/bgwriter.h"
 #include "storage/bufmgr.h"
+#include "storage/condition_variable.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/sinvaladt.h"
@@ -45,13 +47,14 @@
 typedef struct S3WorkerCtl
 {
 	S3TaskLocation location;
-	bool		flushPgdataCrc;
+	pg_atomic_flag flushPgdataCrc;
 
 	Latch	   *latch;
 } S3WorkerCtl;
 
-static volatile sig_atomic_t shutdown_requested = false;
-static volatile S3WorkerCtl *workers_ctl = NULL;
+static volatile sig_atomic_t	shutdown_requested = false;
+static volatile S3WorkerCtl	   *workers_ctl = NULL;
+static ConditionVariable		workers_flushed_cv;
 
 static HTAB		   *pgdata_hash = NULL;
 static StringInfo	pgdata_crc_buf = NULL;
@@ -81,10 +84,12 @@ s3_workers_init_shmem(Pointer ptr, bool found)
 	for (i = 0; i < s3_num_workers; i++)
 	{
 		workers_ctl[i].location = InvalidS3TaskLocation;
-		workers_ctl[i].flushPgdataCrc = false;
+		pg_atomic_init_flag(&workers_ctl[i].flushPgdataCrc);
 
 		workers_ctl[i].latch = NULL;
 	}
+
+	ConditionVariableInit(&workers_flushed_cv);
 }
 
 static void
@@ -111,6 +116,43 @@ register_s3worker(int num)
 				"orioledb s3 worker %d", num);
 	strcpy(worker.bgw_type, "orioledb s3 worker");
 	RegisterBackgroundWorker(&worker);
+}
+
+/*
+ * Notify the S3 worker to flush its state.  Currently it only flushes PGDATA
+ * files hash table.
+ */
+void
+s3_worker_flush(int num)
+{
+	pg_atomic_test_set_flag(&workers_ctl[num].flushPgdataCrc);
+	SetLatch(workers_ctl[num].latch);
+}
+
+/*
+ * Wait until all S3 workers flushed their state.
+ */
+void
+s3_workers_wait_for_flush(void)
+{
+	for (;;)
+	{
+		bool		all_flushed = true;
+
+		/* Workers flushed their state if flushPgdataCrc is unset */
+		for (int i = 0; all_flushed && (i < s3_num_workers); i++)
+		{
+			if (!pg_atomic_unlocked_test_flag(&workers_ctl[i].flushPgdataCrc))
+				all_flushed = false;
+		}
+
+		if (all_flushed)
+			break;
+
+		ConditionVariableSleep(&workers_flushed_cv, WAIT_EVENT_BGWRITER_MAIN);
+	}
+
+	ConditionVariableCancelSleep();
 }
 
 /*
@@ -347,7 +389,7 @@ s3process_task(uint64 taskLocation)
 
 		elog(DEBUG1, "S3 PG file put %s %s", objectname, filename);
 
-		data = s3_read_file(filename, &size);
+		data = read_file(filename, &size);
 
 		if (data != NULL && check_pgdata_file_changed(filename, data, size))
 			(void) s3_put_object_with_contents(objectname, filename, false, false);
@@ -719,7 +761,7 @@ s3worker_main(Datum main_arg)
 
 	ResetLatch(MyLatch);
 
-	workers_ctl[num].flushPgdataCrc = false;
+	pg_atomic_clear_flag(&workers_ctl[num].flushPgdataCrc);
 	workers_ctl[num].latch = MyLatch;
 
 
@@ -753,6 +795,13 @@ s3worker_main(Datum main_arg)
 
 			if (rc & WL_POSTMASTER_DEATH)
 				shutdown_requested = true;
+
+			if (pgdata_crc_buf != NULL &&
+				!pg_atomic_unlocked_test_flag(&workers_ctl[num].flushPgdataCrc))
+			{
+				flush_pgdata_hash(num);
+				pg_atomic_clear_flag(&workers_ctl[num].flushPgdataCrc);
+			}
 
 			/*
 			 * Task processing loop.  It might happend that error occurs and
@@ -812,18 +861,24 @@ read_file_hash(StringInfo buf, char *file_name, uint64 *file_crc)
 static HTAB *
 init_pgdata_hash(void)
 {
-	Pointer		buf;
+	Pointer		data;
+	StringInfoData buf;
 	Pointer		ptr;
-	uint64		buf_size;
+	uint64		data_size;
 	HASHCTL		ctl;
 	HTAB	   *hash;
 	
-	buf = s3_read_file(PGDATA_CRC_FILENAME, &buf_size);
-	if (buf == NULL)
+	data = read_file(PGDATA_CRC_FILENAME, &data_size);
+	if (data == NULL)
 	{
 		/* In case of the file is missing just return NULL */
 		return NULL;
 	}
+
+	buf.cursor = 0;
+	buf.maxlen = -1;
+	buf.data = data;
+	buf.len = data_size;
 
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = MAXPGPATH;
@@ -835,25 +890,15 @@ init_pgdata_hash(void)
 					   &ctl,
 					   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
-	ptr = buf;
-	while ((ptr - buf) > buf_size)
+	while (buf.cursor < buf.len)
 	{
-		char		filename[MAXPGPATH];
-		Size		len;
+		const char *filename;
 		uint64		file_crc;
 		uint64	   *entry;
 		bool		found;
 
-		len = strlcpy(filename, ptr, sizeof(filename)) + 1 /* null byte */;
-		ptr += len;
-
-		if (buf_size - (ptr - buf) < sizeof(file_crc) + 1)
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("invalid hash file \"%s\"", PGDATA_CRC_FILENAME)));
-
-		memcpy((char *) &file_crc, ptr, sizeof(file_crc));
-		ptr += sizeof(file_crc) + 1 /* null byte */;
+		filename = pq_getmsgrawstring(&buf);
+		pq_copymsgbytes(&buf, (char *) &file_crc, sizeof(file_crc));
 
 		entry = (uint64 *) hash_search(hash, filename, HASH_ENTER, &found);
 		/* Normally we shouldn't have duplicated keys in the file */
@@ -884,13 +929,13 @@ flush_pgdata_hash(int num)
 	snprintf(filename, sizeof(filename), "%s.%d", PGDATA_CRC_FILENAME, num);
 
 	file = PathNameOpenFile(filename, O_CREAT | O_RDWR | PG_BINARY);
-	if (file < 0)
+	if (file <= 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", filename)));
 
-	rc = FileWrite(file, pgdata_crc_buf->data, pgdata_crc_buf->len, 0, WAIT_EVENT_BUFFILE_WRITE);
-
+	rc = FileWrite(file, pgdata_crc_buf->data, pgdata_crc_buf->len, 0,
+				   WAIT_EVENT_BUFFILE_WRITE);
 	if (rc < 0 || rc != pgdata_crc_buf->len)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -900,6 +945,10 @@ flush_pgdata_hash(int num)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not sync file \"%s\": %m", filename)));
+
+	pfree(pgdata_crc_buf->data);
+	pfree(pgdata_crc_buf);
+	pgdata_crc_buf = NULL;
 
 	FileClose(file);
 }
