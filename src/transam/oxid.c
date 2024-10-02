@@ -440,7 +440,8 @@ map_oxid(OXid oxid, CommitSeqNo *outCsn, XLogRecPtr *outPtr)
 		if (found)
 		{
 			outCsn = NULL;
-			return;
+			if (!outPtr)
+				return;
 		}
 	}
 
