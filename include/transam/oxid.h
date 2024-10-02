@@ -66,7 +66,7 @@ extern OSnapshot o_non_deleted_snapshot;
 		(o_snapshot)->xlogptr = InvalidXLogRecPtr; \
 	} while (false)
 
-#define XLOG_PTR_ALIGN(ptr) ((ptr) + (ptr) & 1)
+#define XLOG_PTR_ALIGN(ptr) ((ptr) + ((ptr) & 1))
 
 extern Size oxid_shmem_needs(void);
 extern void oxid_init_shmem(Pointer ptr, bool found);
