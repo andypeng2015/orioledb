@@ -92,12 +92,14 @@ typedef struct
 	uint8		recType;
 	uint8		xid[sizeof(TransactionId)];
 	uint8		xmin[sizeof(OXid)];
+	uint8		csn[sizeof(CommitSeqNo)];
 } WALRecJointCommit;
 
 typedef struct
 {
 	uint8		recType;
 	uint8		xmin[sizeof(OXid)];
+	uint8		csn[sizeof(CommitSeqNo)];
 } WALRecFinish;
 
 typedef struct

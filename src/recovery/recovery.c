@@ -2495,6 +2495,9 @@ replay_container(Pointer startPtr, Pointer endPtr,
 			memcpy(&xmin, ptr, sizeof(xmin));
 			ptr += sizeof(xmin);
 
+			/* skip csn field */
+			ptr += sizeof(CommitSeqNo);
+
 			recovery_xmin = Max(recovery_xmin, xmin);
 
 			Assert(sys_tree_num <= 0 || sys_tree_supports_transactions(sys_tree_num));
@@ -2532,6 +2535,9 @@ replay_container(Pointer startPtr, Pointer endPtr,
 			ptr += sizeof(xid);
 			memcpy(&xmin, ptr, sizeof(xmin));
 			ptr += sizeof(xmin);
+
+			/* skip csn field */
+			ptr += sizeof(CommitSeqNo);
 
 			cur_state->xid = xid;
 			recovery_xmin = Max(recovery_xmin, xmin);

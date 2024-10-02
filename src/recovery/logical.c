@@ -264,9 +264,19 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			OXid		xmin;
 			dlist_iter	cur_txn_i;
 			ReorderBufferTXN *txn;
+			CommitSeqNo csn;
+			CSNSnapshotData csnSnapshot;
 
 			memcpy(&xmin, ptr, sizeof(xmin));
 			ptr += sizeof(xmin);
+			memcpy(&csn, ptr, sizeof(csn));
+			ptr += sizeof(csn);
+
+			csnSnapshot.snapshotcsn = csn;
+			csnSnapshot.xmin = xmin;
+			csnSnapshot.xlogptr = buf->endptr;
+
+			SnapBuildUpdateCSNSnaphot(ctx->snapshot_builder, &csnSnapshot);
 
 			txn = get_reorder_buffer_txn(ctx->reorder, logicalXid);
 			if (txn->toptxn)
@@ -297,11 +307,21 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		{
 			TransactionId xid;
 			OXid		xmin;
+			CommitSeqNo csn;
+			CSNSnapshotData csnSnapshot;
 
 			memcpy(&xid, ptr, sizeof(xid));
 			ptr += sizeof(xid);
 			memcpy(&xmin, ptr, sizeof(xmin));
 			ptr += sizeof(xmin);
+			memcpy(&csn, ptr, sizeof(csn));
+			ptr += sizeof(csn);
+
+			csnSnapshot.snapshotcsn = csn;
+			csnSnapshot.xmin = xmin;
+			csnSnapshot.xlogptr = buf->endptr;
+
+			SnapBuildUpdateCSNSnaphot(ctx->snapshot_builder, &csnSnapshot);
 
 			ReorderBufferCommit(ctx->reorder, logicalXid,
 								buf->origptr, buf->endptr,

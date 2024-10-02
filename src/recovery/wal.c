@@ -191,6 +191,7 @@ static void
 add_finish_wal_record(uint8 rec_type, OXid xmin)
 {
 	WALRecFinish *rec;
+	CommitSeqNo csn;
 
 	Assert(!is_recovery_process());
 	Assert(rec_type == WAL_REC_COMMIT || rec_type == WAL_REC_ROLLBACK);
@@ -201,6 +202,8 @@ add_finish_wal_record(uint8 rec_type, OXid xmin)
 	rec = (WALRecFinish *) (&local_wal_buffer[local_wal_buffer_offset]);
 	rec->recType = rec_type;
 	memcpy(rec->xmin, &xmin, sizeof(xmin));
+	csn = pg_atomic_read_u64(&ShmemVariableCache->nextCommitSeqNo);
+	memcpy(rec->csn, &csn, sizeof(csn));
 
 	local_wal_buffer_offset += sizeof(*rec);
 }
@@ -209,6 +212,7 @@ static void
 add_joint_commit_wal_record(TransactionId xid, OXid xmin)
 {
 	WALRecJointCommit *rec;
+	CommitSeqNo csn;
 
 	Assert(!is_recovery_process());
 	flush_local_wal_if_needed(sizeof(*rec));
@@ -220,6 +224,8 @@ add_joint_commit_wal_record(TransactionId xid, OXid xmin)
 	rec->recType = WAL_REC_JOINT_COMMIT;
 	memcpy(rec->xid, &xid, sizeof(xid));
 	memcpy(rec->xmin, &xmin, sizeof(xmin));
+	csn = pg_atomic_read_u64(&ShmemVariableCache->nextCommitSeqNo);
+	memcpy(rec->csn, &csn, sizeof(csn));
 	local_wal_buffer_offset += sizeof(*rec);
 }
 

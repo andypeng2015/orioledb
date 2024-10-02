@@ -1393,9 +1393,11 @@ fill_current_oxid_osnapshot(OXid *oxid, OSnapshot *snapshot)
 
 	if (ActiveSnapshotSet())
 	{
-		snapshot->csn = GetActiveSnapshot()->csnSnapshotData.snapshotcsn;
-		snapshot->xlogptr = GetActiveSnapshot()->csnSnapshotData.xlogptr;
-		snapshot->xmin = GetActiveSnapshot()->csnSnapshotData.xmin;
+		Snapshot	activeSnapshot = GetActiveSnapshot();
+
+		snapshot->csn = activeSnapshot->csnSnapshotData.snapshotcsn;
+		snapshot->xlogptr = activeSnapshot->csnSnapshotData.xlogptr;
+		snapshot->xmin = activeSnapshot->csnSnapshotData.xmin;
 	}
 	else
 	{
