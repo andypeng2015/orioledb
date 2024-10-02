@@ -46,13 +46,13 @@ extern PGDLLIMPORT const TupleTableSlotOps TTSOpsOrioleDB;
 
 extern void tts_orioledb_detoast(TupleTableSlot *slot);
 extern void tts_orioledb_store_tuple(TupleTableSlot *slot, OTuple tuple,
-									 OTableDescr *descr, OSnapshot *o_snapshot,
+									 OTableDescr *descr, CommitSeqNo csn,
 									 int ixnum, bool shouldfree,
 									 BTreeLocationHint *hint);
 extern void tts_orioledb_store_non_leaf_tuple(TupleTableSlot *slot,
 											  OTuple tuple,
 											  OTableDescr *descr,
-											  OSnapshot *o_snapshot,
+											  CommitSeqNo csn,
 											  int ixnum, bool shouldfree,
 											  BTreeLocationHint *hint);
 extern OTuple tts_orioledb_make_secondary_tuple(TupleTableSlot *slot,
@@ -71,17 +71,17 @@ extern OTuple tts_orioledb_form_orphan_tuple(TupleTableSlot *slot,
 											 OTableDescr *descr);
 extern bool tts_orioledb_insert_toast_values(TupleTableSlot *slot,
 											 OTableDescr *descr,
-											 OXid oxid, OSnapshot *o_snapshot);
+											 OXid oxid, CommitSeqNo csn);
 extern void tts_orioledb_toast_sort_add(TupleTableSlot *slot,
 										OTableDescr *descr,
 										Tuplesortstate *sortstate);
 extern bool tts_orioledb_remove_toast_values(TupleTableSlot *slot,
 											 OTableDescr *descr,
-											 OXid oxid, OSnapshot *o_snapshot);
+											 OXid oxid, CommitSeqNo csn);
 extern bool tts_orioledb_update_toast_values(TupleTableSlot *oldSlot,
 											 TupleTableSlot *newSlot,
 											 OTableDescr *descr,
-											 OXid oxid, OSnapshot *o_snapshot);
+											 OXid oxid, CommitSeqNo csn);
 extern bool tts_orioledb_modified(TupleTableSlot *oldSlot,
 								  TupleTableSlot *newSlot,
 								  Bitmapset *attrs);

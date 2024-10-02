@@ -204,7 +204,7 @@ o_detoast(struct varlena *attr)
 	ORelOids	oids;
 	OTableDescr *descr;
 	OFixedKey	key;
-	OSnapshot	temp_o_snapshot;
+	OSnapshot	oSnapshot;
 
 	memcpy(&ote, VARDATA_EXTERNAL(attr), O_TOAST_EXTERNAL_SZ);
 	oids.datoid = ote.datoid;
@@ -220,10 +220,10 @@ o_detoast(struct varlena *attr)
 	memcpy(key.fixedData,
 		   VARDATA_EXTERNAL(attr) + O_TOAST_EXTERNAL_SZ,
 		   ote.data_size);
-	temp_o_snapshot.csn = ote.csn;
+	O_LOAD_SNAPSHOT_CSN(&oSnapshot, ote.csn);
 	return (struct varlena *) o_toast_get(GET_PRIMARY(descr), descr->toast,
 										  key.tuple, ote.attnum,
-										  ote.toasted_size, &temp_o_snapshot);
+										  ote.toasted_size, &oSnapshot);
 }
 
 static BTreeDescr *
@@ -359,7 +359,7 @@ tableGetTupleDataSize(OTuple tuple, void *arg)
 }
 
 static TupleFetchCallbackResult
-tableVersionCallback(OTuple tuple, OXid tupOxid, CommitSeqNo csn, void *arg,
+tableVersionCallback(OTuple tuple, OXid tupOxid, OSnapshot *oSnapshot, void *arg,
 					 TupleFetchCallbackCheckType check_type)
 {
 	OToastKey  *key = (OToastKey *) arg;
@@ -367,7 +367,8 @@ tableVersionCallback(OTuple tuple, OXid tupOxid, CommitSeqNo csn, void *arg,
 	if (check_type != OTupleFetchCallbackVersionCheck)
 		return OTupleFetchNext;
 
-	if (!(COMMITSEQNO_IS_INPROGRESS(csn) && tupOxid == get_current_oxid_if_any()))
+	if (!(COMMITSEQNO_IS_INPROGRESS(oSnapshot->csn) &&
+		  tupOxid == get_current_oxid_if_any()))
 		return OTupleFetchNext;
 
 	if (o_tuple_get_version(tuple) <= o_tuple_get_version(key->pk_tuple))
@@ -394,7 +395,7 @@ ToastAPI	tableToastAPI = {
 
 bool
 generic_toast_insert_optional_wal(ToastAPI *api, void *key, Pointer data,
-								  Size data_size, OXid oxid, OSnapshot *o_snapshot,
+								  Size data_size, OXid oxid, CommitSeqNo csn,
 								  void *arg, bool wal)
 {
 	BTreeDescr *desc = api->getBTreeDesc(arg);
@@ -427,7 +428,7 @@ generic_toast_insert_optional_wal(ToastAPI *api, void *key, Pointer data,
 		inserted = o_btree_modify(desc, BTreeOperationInsert,
 								  tup, BTreeKeyLeafTuple,
 								  key, BTreeKeyBound,
-								  oxid, o_snapshot, RowLockUpdate,
+								  oxid, csn, RowLockUpdate,
 								  NULL, &callbackInfo) == OBTreeModifyResultInserted;
 
 		if (!inserted)
@@ -453,10 +454,10 @@ generic_toast_insert_optional_wal(ToastAPI *api, void *key, Pointer data,
 
 bool
 generic_toast_insert(ToastAPI *api, void *key, Pointer data, Size data_size,
-					 OXid oxid, OSnapshot *o_snapshot, void *arg)
+					 OXid oxid, CommitSeqNo csn, void *arg)
 {
 	return generic_toast_insert_optional_wal(api, key, data, data_size, oxid,
-											 o_snapshot, arg, true);
+											 csn, arg, true);
 }
 
 void
@@ -525,7 +526,7 @@ o_delete_callback(BTreeDescr *descr,
 
 bool
 generic_toast_update_optional_wal(ToastAPI *api, void *key, Pointer data,
-								  Size data_size, OXid oxid, OSnapshot *o_snapshot,
+								  Size data_size, OXid oxid, CommitSeqNo csn,
 								  void *arg, bool wal)
 {
 	BTreeDescr *desc = api->getBTreeDesc(arg);
@@ -563,7 +564,7 @@ generic_toast_update_optional_wal(ToastAPI *api, void *key, Pointer data,
 		result = o_btree_modify(desc, BTreeOperationInsert,
 								tup, BTreeKeyLeafTuple,
 								key, BTreeKeyBound,
-								oxid, o_snapshot, RowLockUpdate,
+								oxid, csn, RowLockUpdate,
 								NULL, &callbackInfo);
 
 		if (result != OBTreeModifyResultInserted && result != OBTreeModifyResultUpdated)
@@ -591,22 +592,22 @@ generic_toast_update_optional_wal(ToastAPI *api, void *key, Pointer data,
 	 * There might be tailing tuples.  We need to delete them.
 	 */
 	api->updateKey(key, chunknum, arg);
-	(void) generic_toast_delete_optional_wal(api, key, oxid, o_snapshot, arg, wal);
+	(void) generic_toast_delete_optional_wal(api, key, oxid, csn, arg, wal);
 
 	return success;
 }
 
 bool
 generic_toast_update(ToastAPI *api, void *key, Pointer data, Size data_size,
-					 OXid oxid, OSnapshot *o_snapshot, void *arg)
+					 OXid oxid, CommitSeqNo csn, void *arg)
 {
 	return generic_toast_update_optional_wal(api, key, data, data_size, oxid,
-											 o_snapshot, arg, true);
+											 csn, arg, true);
 }
 
 bool
 generic_toast_delete_optional_wal(ToastAPI *api, void *key, OXid oxid,
-								  OSnapshot *o_snapshot, void *arg, bool wal)
+								  CommitSeqNo csn, void *arg, bool wal)
 {
 	BTreeDescr *desc = api->getBTreeDesc(arg);
 	void	   *nextKey;
@@ -619,10 +620,13 @@ generic_toast_delete_optional_wal(ToastAPI *api, void *key, OXid oxid,
 		.needsUndoForSelfCreated = false,
 		.arg = NULL
 	};
+	OSnapshot	oSnapshot;
+
+	O_LOAD_SNAPSHOT_CSN(&oSnapshot, csn);
 
 	nextKey = api->getNextKey(key, arg);
 	it = o_btree_iterator_create(desc, key, BTreeKeyBound,
-								 o_snapshot, ForwardScanDirection);
+								 &oSnapshot, ForwardScanDirection);
 
 	do
 	{
@@ -644,7 +648,7 @@ generic_toast_delete_optional_wal(ToastAPI *api, void *key, OXid oxid,
 		O_TUPLE_SET_NULL(nullTup);
 		if (o_btree_modify(desc, BTreeOperationDelete,
 						   nullTup, BTreeKeyNone,
-						   key, BTreeKeyBound, oxid, o_snapshot, RowLockUpdate,
+						   key, BTreeKeyBound, oxid, csn, RowLockUpdate,
 						   &hint, &callbackInfo) != OBTreeModifyResultDeleted)
 		{
 			elog(ERROR, "Unexpected missing TOAST chunk");
@@ -681,10 +685,10 @@ generic_toast_delete_optional_wal(ToastAPI *api, void *key, OXid oxid,
 }
 
 bool
-generic_toast_delete(ToastAPI *api, void *key, OXid oxid, OSnapshot *o_snapshot,
+generic_toast_delete(ToastAPI *api, void *key, OXid oxid, CommitSeqNo csn,
 					 void *arg)
 {
-	return generic_toast_delete_optional_wal(api, key, oxid, o_snapshot, arg, true);
+	return generic_toast_delete_optional_wal(api, key, oxid, csn, arg, true);
 }
 
 Pointer
@@ -863,7 +867,7 @@ generic_toast_get_any(ToastAPI *api, void *key, Size *data_size,
 bool
 o_toast_insert(OIndexDescr *primary, OIndexDescr *toast, OTuple pk, uint16 attn,
 			   Pointer data, Size data_size,
-			   OXid oxid, OSnapshot *o_snapshot)
+			   OXid oxid, CommitSeqNo csn)
 {
 	OToastKey	tkey;
 	bool		result;
@@ -876,7 +880,7 @@ o_toast_insert(OIndexDescr *primary, OIndexDescr *toast, OTuple pk, uint16 attn,
 	Assert(toast->desc.type == oIndexToast);
 
 	result = generic_toast_insert(&tableToastAPI, &tkey, data,
-								  data_size, oxid, o_snapshot, &arg);
+								  data_size, oxid, csn, &arg);
 
 	return result;
 }
@@ -904,7 +908,7 @@ o_toast_sort_add(OIndexDescr *primary, OIndexDescr *toast,
 bool
 o_toast_delete(OIndexDescr *primary, OIndexDescr *toast,
 			   OTuple pk, uint16 attn,
-			   OXid oxid, OSnapshot *o_snapshot)
+			   OXid oxid, CommitSeqNo csn)
 {
 	OToastKey	tkey;
 	bool		result;
@@ -917,7 +921,7 @@ o_toast_delete(OIndexDescr *primary, OIndexDescr *toast,
 	Assert(toast->desc.type == oIndexToast);
 
 	result = generic_toast_delete(&tableToastAPI, (Pointer) &tkey,
-								  oxid, o_snapshot, &arg);
+								  oxid, csn, &arg);
 
 	return result;
 }

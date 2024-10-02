@@ -157,7 +157,7 @@ PGDLLEXPORT void recovery_worker_main(Datum main_arg);
 extern void apply_modify_record(OTableDescr *descr, OIndexDescr *id,
 								uint16 type, OTuple p);
 extern bool apply_btree_modify_record(BTreeDescr *tree, uint16 type,
-									  OTuple ptr, OXid oxid, OSnapshot *o_snapshot);
+									  OTuple ptr, OXid oxid, CommitSeqNo csn);
 
 extern OBTreeModifyCallbackAction recovery_insert_primary_callback(BTreeDescr *descr,
 																   OTuple tup, OTuple *newtup,

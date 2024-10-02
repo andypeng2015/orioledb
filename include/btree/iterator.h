@@ -30,25 +30,29 @@ typedef enum
 } TupleFetchCallbackCheckType;
 
 typedef TupleFetchCallbackResult (*TupleFetchCallback) (OTuple tuple,
-														OXid tupOxid, CommitSeqNo csn, void *arg,
+														OXid tupOxid,
+														OSnapshot *oSnapshot,
+														void *arg,
 														TupleFetchCallbackCheckType check_type);
 
 extern OTuple o_btree_find_tuple_by_key(BTreeDescr *desc, void *key,
 										BTreeKeyType kind,
 										OSnapshot *read_o_snapshot,
-										OSnapshot *out_o_snapshot,
+										CommitSeqNo *out_csn,
 										MemoryContext mcxt,
 										BTreeLocationHint *hint);
 
 extern BTreeIterator *o_btree_iterator_create(BTreeDescr *desc, void *key,
-											  BTreeKeyType kind, OSnapshot *o_snapshot,
+											  BTreeKeyType kind,
+											  OSnapshot *o_snapshot,
 											  ScanDirection scan);
 extern void o_btree_iterator_set_tuple_ctx(BTreeIterator *it,
 										   MemoryContext tupleCxt);
 extern void o_btree_iterator_set_callback(BTreeIterator *it,
 										  TupleFetchCallback callback,
 										  void *arg);
-extern OTuple o_btree_iterator_fetch(BTreeIterator *it, OSnapshot *tuple_o_snapshot,
+extern OTuple o_btree_iterator_fetch(BTreeIterator *it,
+									 CommitSeqNo *tuple_csn,
 									 void *end, BTreeKeyType endType,
 									 bool endIsIncluded,
 									 BTreeLocationHint *hint);
@@ -64,7 +68,7 @@ extern void btree_iterator_free(BTreeIterator *it);
 extern OTuple o_btree_find_tuple_by_key_cb(BTreeDescr *desc, void *key,
 										   BTreeKeyType kind,
 										   OSnapshot *read_o_snapshot,
-										   OSnapshot *out_o_snapshot,
+										   CommitSeqNo *out_csn,
 										   MemoryContext mcxt,
 										   BTreeLocationHint *hint,
 										   bool *deleted,
@@ -73,8 +77,10 @@ extern OTuple o_btree_find_tuple_by_key_cb(BTreeDescr *desc, void *key,
 
 extern OTuple o_find_tuple_version(BTreeDescr *desc, Page p,
 								   BTreePageItemLocator *loc,
-								   CommitSeqNo csn, CommitSeqNo *tupleCsn,
-								   MemoryContext mcxt, TupleFetchCallback cb,
+								   OSnapshot *oSnapshot,
+								   CommitSeqNo *tupleCsn,
+								   MemoryContext mcxt,
+								   TupleFetchCallback cb,
 								   void *arg);
 
 #endif							/* __BTREE_ITERATOR_H__ */

@@ -128,20 +128,20 @@ extern TupleDesc o_table_tupdesc(OTable *o_table);
 extern OTableField *o_table_field_by_name(OTable *table, const char *name);
 
 /* Drops a table by oids from o_tables list */
-extern OTable *o_tables_drop_by_oids(ORelOids oids, OXid oxid, OSnapshot *o_snapshot);
+extern OTable *o_tables_drop_by_oids(ORelOids oids, OXid oxid, CommitSeqNo csn);
 
 /* Drops all tables from o_tables list */
-extern void o_tables_drop_all(OXid oxid, OSnapshot *o_snapshot, Oid database_id);
+extern void o_tables_drop_all(OXid oxid, CommitSeqNo csn, Oid database_id);
 
 /* Drops all columns of a specific type */
-extern void o_tables_drop_columns_by_type(OXid oxid, OSnapshot *o_snapshot, Oid type_oid);
+extern void o_tables_drop_columns_by_type(OXid oxid, CommitSeqNo csn, Oid type_oid);
 
 /* Drops all temporary tables that left after crash */
 extern void o_tables_drop_all_temporary(void);
 
 /* Adds a new table to o_tables list */
-extern bool o_tables_add(OTable *table, OXid oxid, OSnapshot *o_snapshot);
-extern bool o_tables_add_version(OTable *table, OXid oxid, OSnapshot *o_snapshot,
+extern bool o_tables_add(OTable *table, OXid oxid, CommitSeqNo csn);
+extern bool o_tables_add_version(OTable *table, OXid oxid, CommitSeqNo csn,
 								 uint32 version);
 
 /* Returns OTable by its oids */
@@ -154,14 +154,14 @@ extern OTable *o_tables_get_by_oids_and_version(ORelOids oids, uint32 *version);
 extern OTable *o_tables_get_by_tree(ORelOids oids, OIndexType type);
 
 /* Updates OTable description in o_tables list */
-extern bool o_tables_update(OTable *table, OXid oxid, OSnapshot *o_snapshot);
+extern bool o_tables_update(OTable *table, OXid oxid, CommitSeqNo csn);
 
 /* Updates OTable description in o_tables list without indices processing */
 extern bool o_tables_update_without_oids_indexes(OTable *table, OXid oxid,
-												 OSnapshot *o_snapshot);
+												 CommitSeqNo csn);
 
 /* Invalidates descriptors after o_tables_update */
-void		o_tables_after_update(OTable *o_table, OXid oxid, OSnapshot *o_snapshot);
+void		o_tables_after_update(OTable *o_table, OXid oxid, CommitSeqNo csn);
 
 /* Free memory of OTable struct */
 extern void o_table_free(OTable *table);
@@ -176,10 +176,10 @@ typedef void (*OTablesOidsCallback) (ORelOids oids, void *arg);
 
 /* Iterates through o_tables list. */
 extern void o_tables_foreach(OTablesCallback callback,
-							 OSnapshot *o_snapshot,
+							 OSnapshot *oSnapshot,
 							 void *arg);
 extern void o_tables_foreach_oids(OTablesOidsCallback callback,
-								  OSnapshot *o_snapshot,
+								  OSnapshot *oSnapshot,
 								  void *arg);
 
 Pointer		serialize_o_table(OTable *o_table, int *size);

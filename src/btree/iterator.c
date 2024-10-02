@@ -49,7 +49,7 @@ typedef struct
 struct BTreeIterator
 {
 	OBTreeFindPageContext context;
-	CommitSeqNo csn;
+	OSnapshot	oSnapshot;
 	UndoIterator undoIt;
 	/* scan direction of current iterator: forward or backward */
 	ScanDirection scanDir;
@@ -74,7 +74,7 @@ static void get_next_combined_location(BTreeIterator *it);
 static void load_page_from_undo(BTreeIterator *it, void *key, BTreeKeyType kind);
 static bool btree_iterator_check_load_next_page(BTreeIterator *it);
 static OTuple o_btree_iterator_fetch_internal(BTreeIterator *it,
-											  OSnapshot *tuple_o_snapshot);
+											  CommitSeqNo *tupleCsn);
 static bool o_btree_interator_can_fetch_from_undo(BTreeDescr *desc, BTreeIterator *it);
 static bool can_fetch_from_undo(BTreeIterator *it);
 static void undo_it_create(UndoIterator *undoIt, BTreeIterator *it);
@@ -113,7 +113,7 @@ static void undo_it_find_internal(UndoIterator *undoIt, void *key, BTreeKeyType 
 OTuple
 o_btree_find_tuple_by_key_cb(BTreeDescr *desc, void *key,
 							 BTreeKeyType kind, OSnapshot *read_o_snapshot,
-							 OSnapshot *out_o_snapshot, MemoryContext mcxt,
+							 CommitSeqNo *out_csn, MemoryContext mcxt,
 							 BTreeLocationHint *hint,
 							 bool *deleted,
 							 TupleFetchCallback cb,
@@ -130,7 +130,8 @@ o_btree_find_tuple_by_key_cb(BTreeDescr *desc, void *key,
 		combinedResult = !have_current_undo(desc->undoType);
 
 	init_page_find_context(&context, desc,
-						   combinedResult ? COMMITSEQNO_INPROGRESS : read_o_snapshot->csn, BTREE_PAGE_FIND_FETCH);
+						   combinedResult ? COMMITSEQNO_INPROGRESS : read_o_snapshot->csn,
+						   BTREE_PAGE_FIND_FETCH);
 
 	/* Use page location hint if provided */
 	if (hint && OInMemoryBlknoIsValid(hint->blkno))
@@ -162,8 +163,8 @@ o_btree_find_tuple_by_key_cb(BTreeDescr *desc, void *key,
 
 			if (XACT_INFO_OXID_IS_CURRENT(xactInfo))
 			{
-				if (out_o_snapshot)
-					out_o_snapshot->csn = COMMITSEQNO_INPROGRESS;
+				if (out_csn)
+					*out_csn = COMMITSEQNO_INPROGRESS;
 
 				if (deleted)
 					*deleted = (tupHdr->deleted != BTreeLeafTupleNonDeleted);
@@ -202,8 +203,8 @@ o_btree_find_tuple_by_key_cb(BTreeDescr *desc, void *key,
 			*deleted = (tupHdr->deleted != BTreeLeafTupleNonDeleted);
 
 		if (cmp == 0)
-			return o_find_tuple_version(desc, img, &loc, read_o_snapshot->csn, &out_o_snapshot->csn,
-										mcxt, cb, arg);
+			return o_find_tuple_version(desc, img, &loc, read_o_snapshot,
+										out_csn, mcxt, cb, arg);
 	}
 
 	/* Tuple isn't found */
@@ -213,11 +214,11 @@ o_btree_find_tuple_by_key_cb(BTreeDescr *desc, void *key,
 
 OTuple
 o_btree_find_tuple_by_key(BTreeDescr *desc, void *key, BTreeKeyType kind,
-						  OSnapshot *read_o_snapshot, OSnapshot *out_o_snapshot,
+						  OSnapshot *read_o_snapshot, CommitSeqNo *out_csn,
 						  MemoryContext mcxt, BTreeLocationHint *hint)
 {
-	return o_btree_find_tuple_by_key_cb(desc, key, kind, read_o_snapshot, out_o_snapshot,
-										mcxt, hint, NULL, NULL, NULL);
+	return o_btree_find_tuple_by_key_cb(desc, key, kind, read_o_snapshot,
+										out_csn, mcxt, hint, NULL, NULL, NULL);
 }
 
 
@@ -226,7 +227,7 @@ o_btree_find_tuple_by_key(BTreeDescr *desc, void *key, BTreeKeyType kind,
  */
 OTuple
 o_find_tuple_version(BTreeDescr *desc, Page p, BTreePageItemLocator *loc,
-					 CommitSeqNo csn, CommitSeqNo *tupleCsn,
+					 OSnapshot *oSnapshot, CommitSeqNo *tupleCsn,
 					 MemoryContext mcxt, TupleFetchCallback cb,
 					 void *arg)
 {
@@ -245,21 +246,24 @@ o_find_tuple_version(BTreeDescr *desc, Page p, BTreePageItemLocator *loc,
 	tupHdr = *tupHdrPtr;
 	(void) find_non_lock_only_undo_record(desc->undoType, &tupHdr);
 
-	Assert(COMMITSEQNO_IS_NORMAL(csn) || COMMITSEQNO_IS_INPROGRESS(csn));
+	Assert(COMMITSEQNO_IS_NORMAL(oSnapshot->csn) ||
+		   COMMITSEQNO_IS_INPROGRESS(oSnapshot->csn));
 
 	while (true)
 	{
 		OTupleXactInfo xactInfo = tupHdr.xactInfo;
 		bool		txIsFinished = XACT_INFO_IS_FINISHED(xactInfo);
 		CommitSeqNo tupcsn;
+		XLogRecPtr	tupptr;
 
-		tupcsn = XACT_INFO_MAP_CSN(xactInfo);
+		oxid_match_snapshot(XACT_INFO_GET_OXID(xactInfo), oSnapshot,
+							&tupcsn, &tupptr);
 		if (tupleCsn)
 		{
 			if (COMMITSEQNO_IS_NORMAL(tupcsn))
-				*tupleCsn = COMMITSEQNO_IS_NORMAL(csn) ? Max(csn, tupcsn + 1) : COMMITSEQNO_MAX_NORMAL - 1;
+				*tupleCsn = COMMITSEQNO_IS_NORMAL(oSnapshot->csn) ? Max(oSnapshot->csn, tupcsn + 1) : COMMITSEQNO_MAX_NORMAL - 1;
 			else if (COMMITSEQNO_IS_FROZEN(tupcsn))
-				*tupleCsn = COMMITSEQNO_IS_NORMAL(csn) ? csn : COMMITSEQNO_MAX_NORMAL - 1;
+				*tupleCsn = COMMITSEQNO_IS_NORMAL(oSnapshot->csn) ? oSnapshot->csn : COMMITSEQNO_MAX_NORMAL - 1;
 			else
 				*tupleCsn = COMMITSEQNO_INPROGRESS;
 		}
@@ -273,7 +277,7 @@ o_find_tuple_version(BTreeDescr *desc, Page p, BTreePageItemLocator *loc,
 				OTupleFetchCallbackVersionCheck :
 				OTupleFetchCallbackKeyCheck;
 
-			cbResult = cb(curTuple, tupOxid, csn, arg, check_type);
+			cbResult = cb(curTuple, tupOxid, oSnapshot, arg, check_type);
 
 			if (cbResult == OTupleFetchMatch)
 				break;
@@ -289,7 +293,7 @@ o_find_tuple_version(BTreeDescr *desc, Page p, BTreePageItemLocator *loc,
 		{
 			if (!cb)
 			{
-				if (COMMITSEQNO_IS_INPROGRESS(csn))
+				if (COMMITSEQNO_IS_INPROGRESS(oSnapshot->csn))
 					break;
 
 				/*
@@ -300,20 +304,36 @@ o_find_tuple_version(BTreeDescr *desc, Page p, BTreePageItemLocator *loc,
 				if (XACT_INFO_GET_OXID(xactInfo) == get_current_oxid_if_any() &&
 					(UndoLocationGetValue(tupHdr.undoLocation) <= saved_undo_location[desc->undoType] ||
 					 IS_SYS_TREE_OIDS(desc->oids)) &&
-					csn != COMMITSEQNO_MAX_NORMAL)
+					oSnapshot->csn != COMMITSEQNO_MAX_NORMAL)
 					break;
 			}
 		}
 		else
 		{
-			if (COMMITSEQNO_IS_INPROGRESS(csn))
+			if (COMMITSEQNO_IS_INPROGRESS(oSnapshot->csn))
 				break;
 		}
 
 		if (!COMMITSEQNO_IS_INPROGRESS(tupcsn) &&
-			!COMMITSEQNO_IS_ABORTED(tupcsn) &&
-			(tupcsn < csn || COMMITSEQNO_IS_INPROGRESS(csn)))
-			break;
+			!COMMITSEQNO_IS_ABORTED(tupcsn))
+		{
+			if (COMMITSEQNO_IS_INPROGRESS(oSnapshot->csn))
+			{
+				Assert(XLogRecPtrIsInvalid(oSnapshot->xlogptr));
+				break;
+			}
+
+			if (XLogRecPtrIsInvalid(oSnapshot->xlogptr))
+			{
+				if (tupcsn < oSnapshot->csn)
+					break;
+			}
+			else
+			{
+				if (tupptr < oSnapshot->xlogptr)
+					break;
+			}
+		}
 
 		undoLocation = tupHdr.undoLocation;
 
@@ -341,7 +361,7 @@ o_find_tuple_version(BTreeDescr *desc, Page p, BTreePageItemLocator *loc,
 		Assert(UNDO_REC_EXISTS(desc->undoType, undoLocation));
 	}
 
-	if (COMMITSEQNO_IS_NON_DELETED(csn))
+	if (COMMITSEQNO_IS_NON_DELETED(oSnapshot->csn))
 	{
 		if (tupHdr.deleted != BTreeLeafTupleNonDeleted &&
 			XACT_INFO_IS_FINISHED(tupHdr.xactInfo))
@@ -385,7 +405,7 @@ o_btree_iterator_create(BTreeDescr *desc, void *key, BTreeKeyType kind,
 
 	it = (BTreeIterator *) palloc(sizeof(BTreeIterator));
 	it->combinedResult = !have_current_undo(desc->undoType) && COMMITSEQNO_IS_NORMAL(o_snapshot->csn);
-	it->csn = o_snapshot->csn;
+	it->oSnapshot = *o_snapshot;
 	it->scanDir = scanDir;
 	it->tupleCxt = CurrentMemoryContext;
 	it->fetchCallback = NULL;
@@ -464,14 +484,14 @@ o_btree_iterator_set_callback(BTreeIterator *it,
 }
 
 OTuple
-o_btree_iterator_fetch(BTreeIterator *it, OSnapshot *tuple_o_snapshot,
+o_btree_iterator_fetch(BTreeIterator *it, CommitSeqNo *tupleCsn,
 					   void *end, BTreeKeyType endType,
 					   bool endIsIncluded, BTreeLocationHint *hint)
 {
 	BTreeDescr *desc = it->context.desc;
 	OTuple		result;
 
-	result = o_btree_iterator_fetch_internal(it, tuple_o_snapshot);
+	result = o_btree_iterator_fetch_internal(it, tupleCsn);
 
 	if (!O_TUPLE_IS_NULL(result) && end != NULL)
 	{
@@ -532,7 +552,7 @@ load_page_from_undo(BTreeIterator *it, void *key, BTreeKeyType kind)
 	BTreePageHeader *header = (BTreePageHeader *) context->img;
 	BTreeDescr *desc = context->desc;
 
-	if (it->combinedResult && header->csn >= it->csn)
+	if (it->combinedResult && header->csn >= it->oSnapshot.csn)
 	{
 		undo_it_init(&it->undoIt, header->undoLocation, key, kind);
 
@@ -617,7 +637,7 @@ get_next_combined_location(BTreeIterator *it)
  * Fetch next tuple without checking for end condition.
  */
 static OTuple
-o_btree_iterator_fetch_internal(BTreeIterator *it, OSnapshot *tuple_o_snapshot)
+o_btree_iterator_fetch_internal(BTreeIterator *it, CommitSeqNo *tupleCsn)
 {
 	BTreeDescr *desc = it->context.desc;
 	OBTreeFindPageContext *context = &it->context;
@@ -656,11 +676,10 @@ o_btree_iterator_fetch_internal(BTreeIterator *it, OSnapshot *tuple_o_snapshot)
 
 			if (cmp <= 0)
 			{
-				CommitSeqNo *tupleCsn = tuple_o_snapshot ? &tuple_o_snapshot->csn : NULL;
-
 				result = o_find_tuple_version(desc, img,
 											  &leaf_item->locator,
-											  it->csn, tupleCsn, it->tupleCxt,
+											  &it->oSnapshot, tupleCsn,
+											  it->tupleCxt,
 											  it->fetchCallback,
 											  it->fetchCallbackArg);
 
@@ -676,11 +695,10 @@ o_btree_iterator_fetch_internal(BTreeIterator *it, OSnapshot *tuple_o_snapshot)
 			}
 			else
 			{
-				CommitSeqNo *tupleCsn = tuple_o_snapshot ? &tuple_o_snapshot->csn : NULL;
-
 				result = o_find_tuple_version(desc, hImg,
 											  &it->undoLoc,
-											  it->csn, tupleCsn, it->tupleCxt,
+											  &it->oSnapshot, tupleCsn,
+											  it->tupleCxt,
 											  it->fetchCallback,
 											  it->fetchCallbackArg);
 
@@ -692,11 +710,9 @@ o_btree_iterator_fetch_internal(BTreeIterator *it, OSnapshot *tuple_o_snapshot)
 		}
 		else
 		{
-			CommitSeqNo *tupleCsn = tuple_o_snapshot ? &tuple_o_snapshot->csn : NULL;
-
 			result = o_find_tuple_version(desc, context->img,
 										  &leaf_item->locator,
-										  it->csn, tupleCsn,
+										  &it->oSnapshot, tupleCsn,
 										  it->tupleCxt,
 										  it->fetchCallback,
 										  it->fetchCallbackArg);
@@ -744,7 +760,7 @@ btree_iterator_check_load_next_page(BTreeIterator *it)
 		if (!step_result)
 			return false;
 
-		if (it->combinedResult && header->csn >= it->csn)
+		if (it->combinedResult && header->csn >= it->oSnapshot.csn)
 		{
 			bool		reload = true;
 
@@ -799,7 +815,7 @@ o_btree_interator_can_fetch_from_undo(BTreeDescr *desc, BTreeIterator *it)
 
 	if (!BTREE_PAGE_LOCATOR_IS_VALID(hImg, &it->undoLoc))
 	{
-		bool		can_switch = it->combinedResult && header->csn >= it->csn;
+		bool		can_switch = it->combinedResult && header->csn >= it->oSnapshot.csn;
 
 		/* switch to next history page if we can */
 		if (undo_it_next_page(it->context.desc, &it->undoIt) ||
@@ -1163,7 +1179,7 @@ undo_it_find_internal(UndoIterator *undoIt, void *key, BTreeKeyType kind)
 		rec_undo_loc = header->undoLocation;
 
 		/* Check if we need to visit next page-level undo item */
-		if (COMMITSEQNO_IS_NORMAL(rec_csn) && rec_csn >= undoIt->it->csn)
+		if (COMMITSEQNO_IS_NORMAL(rec_csn) && rec_csn >= undoIt->it->oSnapshot.csn)
 		{
 			undoLocation = rec_undo_loc;
 			continue;

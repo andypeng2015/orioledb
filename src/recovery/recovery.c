@@ -10,7 +10,6 @@
  *
  *-------------------------------------------------------------------------
  */
-
 #include "postgres.h"
 
 #include "orioledb.h"
@@ -28,6 +27,7 @@
 #include "recovery/wal.h"
 #include "tableam/descr.h"
 #include "tableam/operations.h"
+#include "transam/oxid.h"
 #include "transam/undo.h"
 #include "utils/dsa.h"
 #include "utils/inval.h"
@@ -309,7 +309,7 @@ static void worker_wait_shutdown(RecoveryWorkerState *worker);
 
 static inline bool apply_sys_tree_modify_record(int sys_tree_num, uint16 type,
 												OTuple tup,
-												OXid oxid, OSnapshot *o_snapshot);
+												OXid oxid, CommitSeqNo csn);
 static inline void spread_idx_modify(BTreeDescr *desc, uint16 recType,
 									 OTuple rec);
 
@@ -1228,7 +1228,7 @@ recovery_finish_current_oxid(CommitSeqNo csn, XLogRecPtr ptr,
 		walk_checkpoint_stacks(csn, InvalidSubTransactionId, flush_undo_pos);
 		csn = pg_atomic_fetch_add_u64(&ShmemVariableCache->nextCommitSeqNo, 1);
 		set_oxid_csn(oxid, csn);
-		set_oxid_xlog_ptr(oxid, ptr);
+		set_oxid_xlog_ptr(oxid, XLOG_PTR_ALIGN(ptr));
 	}
 	else if (!COMMITSEQNO_IS_ABORTED(csn) && !sync)
 	{
@@ -1487,7 +1487,7 @@ recovery_insert_deleted_systree_callback(BTreeDescr *descr,
  */
 bool
 apply_btree_modify_record(BTreeDescr *tree, uint16 type, OTuple ptr,
-						  OXid oxid, OSnapshot *o_snapshot)
+						  OXid oxid, CommitSeqNo csn)
 {
 	OBTreeModifyResult modifyResult;
 	BTreeModifyCallbackInfo callbackInfo = nullCallbackInfo;
@@ -1535,7 +1535,7 @@ apply_btree_modify_record(BTreeDescr *tree, uint16 type, OTuple ptr,
 			modifyResult = o_btree_modify(tree, BTreeOperationInsert,
 										  ptr, BTreeKeyLeafTuple,
 										  NULL, BTreeKeyNone,
-										  oxid, o_snapshot, RowLockUpdate,
+										  oxid, csn, RowLockUpdate,
 										  NULL, &callbackInfo);
 			result = modifyResult == OBTreeModifyResultInserted || modifyResult == OBTreeModifyResultUpdated;
 			break;
@@ -1543,13 +1543,13 @@ apply_btree_modify_record(BTreeDescr *tree, uint16 type, OTuple ptr,
 			result = o_btree_modify(tree, BTreeOperationInsert,
 									ptr, BTreeKeyLeafTuple,
 									NULL, BTreeKeyNone,
-									oxid, o_snapshot, RowLockNoKeyUpdate,
+									oxid, csn, RowLockNoKeyUpdate,
 									NULL, &callbackInfo) == OBTreeModifyResultUpdated;
 			break;
 		case RECOVERY_DELETE:
 			result = o_btree_modify(tree, BTreeOperationDelete,
 									ptr, BTreeKeyNonLeafKey,
-									NULL, BTreeKeyNone, oxid, o_snapshot, RowLockUpdate,
+									NULL, BTreeKeyNone, oxid, csn, RowLockUpdate,
 									NULL, &callbackInfo) == OBTreeModifyResultDeleted;
 			break;
 		default:
@@ -1745,7 +1745,7 @@ update_proc_retain_undo_location(int worker_id)
 				set_oxid_csn(state->oxid, COMMITSEQNO_COMMITTING);
 				state->csn = pg_atomic_fetch_add_u64(&ShmemVariableCache->nextCommitSeqNo, 1);
 				set_oxid_csn(state->oxid, state->csn);
-				set_oxid_xlog_ptr(state->oxid, state->ptr);
+				set_oxid_xlog_ptr(state->oxid, XLOG_PTR_ALIGN(state->ptr));
 			}
 			else
 			{
@@ -2686,7 +2686,7 @@ replay_container(Pointer startPtr, Pointer endPtr,
 
 				success = apply_sys_tree_modify_record(sys_tree_num, type,
 													   tuple.tuple, oxid,
-													   &o_in_progress_snapshot);
+													   COMMITSEQNO_INPROGRESS);
 
 				if (sys_tree_num == SYS_TREES_O_INDICES && success)
 				{
@@ -3194,12 +3194,12 @@ worker_queue_flush(int worker_id)
  */
 static bool
 apply_sys_tree_modify_record(int sys_tree_num, uint16 type, OTuple tup,
-							 OXid oxid, OSnapshot *o_snapshot)
+							 OXid oxid, CommitSeqNo csn)
 {
 	bool		result;
 
 	result = apply_btree_modify_record(get_sys_tree(sys_tree_num),
-									   type, tup, oxid, o_snapshot);
+									   type, tup, oxid, csn);
 
 	return result;
 }

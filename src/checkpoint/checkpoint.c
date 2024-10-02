@@ -1043,7 +1043,7 @@ o_update_latest_chkp_num(Oid datoid, Oid relnode, uint32 chkp_num)
 							newTuple, BTreeKeyLeafTuple,
 							(Pointer) &key_tuple, BTreeKeyNonLeafKey,
 							InvalidOXid,
-							&o_in_progress_snapshot,
+							COMMITSEQNO_INPROGRESS,
 							RowLockUpdate,
 							NULL,
 							&callbackInfo);
@@ -1076,7 +1076,7 @@ o_delete_chkp_num(Oid datoid, Oid relnode)
 						  key_tuple, BTreeKeyNonLeafKey,
 						  (Pointer) NULL, BTreeKeyNone,
 						  InvalidOXid,
-						  &o_in_progress_snapshot,
+						  COMMITSEQNO_INPROGRESS,
 						  RowLockUpdate,
 						  NULL,
 						  &nullCallbackInfo);

@@ -75,14 +75,14 @@ typedef struct
 typedef struct
 {
 	OXid		oxid;
-	OSnapshot	o_snapshot;
+	CommitSeqNo csn;
 	Oid			datoid;
 } OTablesDropAllArg;
 
 typedef struct
 {
 	OXid		oxid;
-	OSnapshot	o_snapshot;
+	CommitSeqNo csn;
 	Oid			type_oid;
 	Form_pg_type type_data;
 } OTablesDropAllWithTypeArg;
@@ -208,8 +208,8 @@ oTablesGetTupleDataSize(OTuple tuple, void *arg)
 }
 
 static TupleFetchCallbackResult
-oTablesVersionCallback(OTuple tuple, OXid tupOxid, CommitSeqNo csn, void *arg,
-					   TupleFetchCallbackCheckType check_type)
+oTablesVersionCallback(OTuple tuple, OXid tupOxid, OSnapshot *oSnapshot,
+					   void *arg, TupleFetchCallbackCheckType check_type)
 {
 	OTableChunkKey *tupleKey = (OTableChunkKey *) tuple.data;
 	OTableChunkKey *boundKey = (OTableChunkKey *) arg;
@@ -217,7 +217,8 @@ oTablesVersionCallback(OTuple tuple, OXid tupOxid, CommitSeqNo csn, void *arg,
 	if (check_type != OTupleFetchCallbackVersionCheck)
 		return OTupleFetchNext;
 
-	if (!(COMMITSEQNO_IS_INPROGRESS(csn) && tupOxid == get_current_oxid_if_any()))
+	if (!(COMMITSEQNO_IS_INPROGRESS(oSnapshot->csn) &&
+		  tupOxid == get_current_oxid_if_any()))
 		return OTupleFetchNext;
 
 	if (boundKey->version == O_TABLE_INVALID_VERSION)
@@ -248,7 +249,7 @@ ToastAPI	oTablesToastAPI = {
 
 void
 o_tables_foreach_oids(OTablesOidsCallback callback,
-					  OSnapshot *o_snapshot,
+					  OSnapshot *oSnapshot,
 					  void *arg)
 {
 	OTableChunkKey chunk_key;
@@ -262,7 +263,7 @@ o_tables_foreach_oids(OTablesOidsCallback callback,
 	chunk_key.chunknum = 0;
 
 	it = o_btree_iterator_create(desc, (Pointer) &chunk_key, BTreeKeyBound,
-								 o_snapshot, ForwardScanDirection);
+								 oSnapshot, ForwardScanDirection);
 
 	tuple = o_btree_iterator_fetch(it, NULL, NULL,
 								   BTreeKeyNone, false, NULL);
@@ -286,7 +287,7 @@ o_tables_foreach_oids(OTablesOidsCallback callback,
 		chunk_key.chunknum = 0;
 
 		it = o_btree_iterator_create(desc, (Pointer) &chunk_key, BTreeKeyBound,
-									 o_snapshot, ForwardScanDirection);
+									 oSnapshot, ForwardScanDirection);
 		tuple = o_btree_iterator_fetch(it, NULL, NULL,
 									   BTreeKeyNone, false, NULL);
 	}
@@ -297,7 +298,7 @@ o_tables_foreach_oids(OTablesOidsCallback callback,
  */
 void
 o_tables_foreach(OTablesCallback callback,
-				 OSnapshot *o_snapshot,
+				 OSnapshot *oSnapshot,
 				 void *arg)
 {
 	OTablesForeachArg foreach_arg;
@@ -305,7 +306,7 @@ o_tables_foreach(OTablesCallback callback,
 	foreach_arg.callback = callback;
 	foreach_arg.arg = arg;
 
-	o_tables_foreach_oids(o_tables_foreach_callback, o_snapshot, &foreach_arg);
+	o_tables_foreach_oids(o_tables_foreach_callback, oSnapshot, &foreach_arg);
 }
 
 static char *
@@ -875,7 +876,7 @@ o_table_make_index_oids(OTable *table, int *num)
  */
 static void
 o_tables_oids_indexes(OTable *old_table, OTable *new_table,
-					  OXid oxid, OSnapshot *o_snapshot)
+					  OXid oxid, CommitSeqNo csn)
 {
 	OTableIndexOidsKey *old_keys = NULL;
 	OTableIndexOidsKey *new_keys = NULL;
@@ -936,7 +937,7 @@ o_tables_oids_indexes(OTable *old_table, OTable *new_table,
 					 old_table->oids.relnode);
 
 				result = o_indices_del(old_table, old_keys[i].ixNum,
-									   oxid, o_snapshot);
+									   oxid, csn);
 				if (!result)
 					elog(ERROR, "missing entries in o_indices");
 			}
@@ -960,7 +961,7 @@ o_tables_oids_indexes(OTable *old_table, OTable *new_table,
 					 new_table->oids.relnode);
 
 				result = o_indices_add(new_table, new_keys[j].ixNum,
-									   oxid, o_snapshot);
+									   oxid, csn);
 				Assert(result);
 			}
 			reuse_relnode = false;
@@ -970,7 +971,7 @@ o_tables_oids_indexes(OTable *old_table, OTable *new_table,
 }
 
 OTable *
-o_tables_drop_by_oids(ORelOids oids, OXid oxid, OSnapshot *o_snapshot)
+o_tables_drop_by_oids(ORelOids oids, OXid oxid, CommitSeqNo csn)
 {
 	OTableChunkKey key;
 	OTable	   *table;
@@ -982,10 +983,10 @@ o_tables_drop_by_oids(ORelOids oids, OXid oxid, OSnapshot *o_snapshot)
 
 	systrees_modify_start();
 	table = o_tables_get(oids);
-	o_tables_oids_indexes(table, NULL, oxid, o_snapshot);
+	o_tables_oids_indexes(table, NULL, oxid, csn);
 	sys_tree = get_sys_tree(SYS_TREES_O_TABLES);
 	result = generic_toast_delete_optional_wal(&oTablesToastAPI,
-											   (Pointer) &key, oxid, o_snapshot,
+											   (Pointer) &key, oxid, csn,
 											   sys_tree, table->persistence != RELPERSISTENCE_TEMP);
 	systrees_modify_end(table->persistence != RELPERSISTENCE_TEMP);
 
@@ -1001,12 +1002,12 @@ o_tables_drop_by_oids(ORelOids oids, OXid oxid, OSnapshot *o_snapshot)
 }
 
 void
-o_tables_drop_all(OXid oxid, OSnapshot *o_snapshot, Oid database_id)
+o_tables_drop_all(OXid oxid, CommitSeqNo csn, Oid database_id)
 {
 	OTablesDropAllArg arg;
 
 	arg.oxid = oxid;
-	arg.o_snapshot = *o_snapshot;
+	arg.csn = csn;
 	arg.datoid = database_id;
 
 	o_tables_foreach_oids(o_tables_drop_all_callback,
@@ -1014,23 +1015,23 @@ o_tables_drop_all(OXid oxid, OSnapshot *o_snapshot, Oid database_id)
 }
 
 void
-o_tables_drop_all_temporary(void)
+o_tables_drop_all_temporary()
 {
 	OTablesDropAllArg arg;
-	OSnapshot	o_snapshot;
 	OXid		oxid;
+	OSnapshot	oSnapshot;
 
-	fill_current_oxid_osnapshot(&oxid, &o_snapshot);
+	fill_current_oxid_osnapshot(&oxid, &oSnapshot);
 
 	arg.oxid = oxid;
-	arg.o_snapshot = o_snapshot;
+	arg.csn = oSnapshot.csn;
 
 	o_tables_foreach(o_tables_drop_all_temporary_callback,
 					 &o_non_deleted_snapshot, &arg);
 }
 
 bool
-o_tables_add_version(OTable *table, OXid oxid, OSnapshot *o_snapshot, uint32 version)
+o_tables_add_version(OTable *table, OXid oxid, CommitSeqNo csn, uint32 version)
 {
 	OTableChunkKey key;
 	bool		result;
@@ -1045,12 +1046,11 @@ o_tables_add_version(OTable *table, OXid oxid, OSnapshot *o_snapshot, uint32 ver
 	key.version = version;
 
 	systrees_modify_start();
-	o_tables_oids_indexes(NULL, table, oxid, o_snapshot);
+	o_tables_oids_indexes(NULL, table, oxid, csn);
 	sys_tree = get_sys_tree(SYS_TREES_O_TABLES);
 	result = generic_toast_insert_optional_wal(&oTablesToastAPI,
 											   (Pointer) &key, data, len, oxid,
-											   o_snapshot, sys_tree,
-											   table->persistence != RELPERSISTENCE_TEMP);
+											   csn, sys_tree, table->persistence != RELPERSISTENCE_TEMP);
 	systrees_modify_end(table->persistence != RELPERSISTENCE_TEMP);
 	pfree(data);
 
@@ -1058,9 +1058,9 @@ o_tables_add_version(OTable *table, OXid oxid, OSnapshot *o_snapshot, uint32 ver
 }
 
 bool
-o_tables_add(OTable *table, OXid oxid, OSnapshot *o_snapshot)
+o_tables_add(OTable *table, OXid oxid, CommitSeqNo csn)
 {
-	return o_tables_add_version(table, oxid, o_snapshot, 0);
+	return o_tables_add_version(table, oxid, csn, 0);
 }
 
 /*
@@ -1119,8 +1119,8 @@ o_tables_get_by_tree(ORelOids oids, OIndexType type)
 	bool		result;
 
 	/* See if it's index oid first */
-	result = o_indices_find_table_oids(oids, type,
-									   &o_in_progress_snapshot, &tableOids);
+	result = o_indices_find_table_oids(oids, type, &o_in_progress_snapshot,
+									   &tableOids);
 	if (!result)
 		return NULL;
 
@@ -1143,7 +1143,7 @@ o_table_free(OTable *table)
 }
 
 static bool
-o_tables_update_common(OTable *table, OXid oxid, OSnapshot *o_snapshot,
+o_tables_update_common(OTable *table, OXid oxid, CommitSeqNo csn,
 					   bool update_indices)
 {
 	OTableChunkKey key;
@@ -1162,12 +1162,11 @@ o_tables_update_common(OTable *table, OXid oxid, OSnapshot *o_snapshot,
 	systrees_modify_start();
 	old_table = o_tables_get(table->oids);
 	if (update_indices)
-		o_tables_oids_indexes(old_table, table, oxid, o_snapshot);
+		o_tables_oids_indexes(old_table, table, oxid, csn);
 	sys_tree = get_sys_tree(SYS_TREES_O_TABLES);
 	result = generic_toast_update_optional_wal(&oTablesToastAPI,
 											   (Pointer) &key, data, len, oxid,
-											   o_snapshot, sys_tree,
-											   table->persistence != RELPERSISTENCE_TEMP);
+											   csn, sys_tree, table->persistence != RELPERSISTENCE_TEMP);
 	systrees_modify_end(table->persistence != RELPERSISTENCE_TEMP);
 
 	pfree(data);
@@ -1177,22 +1176,22 @@ o_tables_update_common(OTable *table, OXid oxid, OSnapshot *o_snapshot,
 }
 
 bool
-o_tables_update(OTable *table, OXid oxid, OSnapshot *o_snapshot)
+o_tables_update(OTable *table, OXid oxid, CommitSeqNo csn)
 {
-	return o_tables_update_common(table, oxid, o_snapshot, true);
+	return o_tables_update_common(table, oxid, csn, true);
 }
 
 bool
-o_tables_update_without_oids_indexes(OTable *table, OXid oxid, OSnapshot *o_snapshot)
+o_tables_update_without_oids_indexes(OTable *table, OXid oxid, CommitSeqNo csn)
 {
-	return o_tables_update_common(table, oxid, o_snapshot, false);
+	return o_tables_update_common(table, oxid, csn, false);
 }
 
 void
-o_tables_after_update(OTable *o_table, OXid oxid, OSnapshot *o_snapshot)
+o_tables_after_update(OTable *o_table, OXid oxid, CommitSeqNo csn)
 {
 	o_opclass_cache_add_table(o_table);
-	o_indices_update(o_table, PrimaryIndexNumber, oxid, o_snapshot);
+	o_indices_update(o_table, PrimaryIndexNumber, oxid, csn);
 	if (o_table->has_primary)
 	{
 		o_add_invalidate_undo_item(o_table->indices[PrimaryIndexNumber].oids,
@@ -1458,7 +1457,7 @@ o_tables_drop_all_callback(ORelOids oids, void *arg)
 	{
 		OTable	   *table;
 
-		table = o_tables_drop_by_oids(oids, drop_arg->oxid, &drop_arg->o_snapshot);
+		table = o_tables_drop_by_oids(oids, drop_arg->oxid, drop_arg->csn);
 
 		if (table)
 		{
@@ -1494,12 +1493,12 @@ o_tables_drop_all_temporary_callback(OTable *o_table, void *arg)
 		{
 			BTreeDescr *sys_tree;
 
-			o_tables_oids_indexes(o_table, NULL, get_current_oxid(), &drop_arg->o_snapshot);
+			o_tables_oids_indexes(o_table, NULL, get_current_oxid(), drop_arg->csn);
 			sys_tree = get_sys_tree(SYS_TREES_O_TABLES);
 			result = generic_toast_delete_optional_wal(&oTablesToastAPI,
 													   (Pointer) &key,
 													   get_current_oxid(),
-													   &drop_arg->o_snapshot,
+													   drop_arg->csn,
 													   sys_tree,
 													   false);
 			if (result)
@@ -1797,7 +1796,7 @@ o_tables_drop_columns_with_type_callback(OTable *o_table, void *arg)
 	if (updated)
 	{
 		o_tables_table_meta_lock(o_table);
-		o_tables_update(o_table, drop_arg->oxid, &drop_arg->o_snapshot);
+		o_tables_update(o_table, drop_arg->oxid, drop_arg->csn);
 		o_tables_table_meta_unlock(o_table, InvalidOid);
 	}
 }
@@ -1807,7 +1806,7 @@ o_tables_drop_columns_with_type_callback(OTable *o_table, void *arg)
  * Drops all columns of a specific type
  */
 void
-o_tables_drop_columns_by_type(OXid oxid, OSnapshot *o_snapshot, Oid type_oid)
+o_tables_drop_columns_by_type(OXid oxid, CommitSeqNo csn, Oid type_oid)
 {
 	OTablesDropAllWithTypeArg arg;
 	HeapTuple	tuple;
@@ -1817,7 +1816,7 @@ o_tables_drop_columns_by_type(OXid oxid, OSnapshot *o_snapshot, Oid type_oid)
 	ReleaseSysCache(tuple);
 
 	arg.oxid = oxid;
-	arg.o_snapshot = *o_snapshot;
+	arg.csn = csn;
 	arg.type_oid = type_oid;
 	arg.type_data = (Form_pg_type) GETSTRUCT(tuple);
 

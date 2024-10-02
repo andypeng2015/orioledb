@@ -929,7 +929,7 @@ o_index_fill_descr(OIndexDescr *descr, OIndex *oIndex, OTable *oTable)
 }
 
 bool
-o_indices_add(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snapshot)
+o_indices_add(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
 {
 	OIndexChunkKey key;
 	bool		result;
@@ -949,14 +949,13 @@ o_indices_add(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snapsho
 	sys_tree = get_sys_tree(SYS_TREES_O_INDICES);
 	result = generic_toast_insert_optional_wal(&oIndicesToastAPI,
 											   (Pointer) &key, data, len, oxid,
-											   o_snapshot, sys_tree,
-											   table->persistence != RELPERSISTENCE_TEMP);
+											   csn, sys_tree, table->persistence != RELPERSISTENCE_TEMP);
 	pfree(data);
 	return result;
 }
 
 bool
-o_indices_del(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snapshot)
+o_indices_del(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
 {
 	OIndexChunkKey key;
 	bool		result;
@@ -971,7 +970,7 @@ o_indices_del(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snapsho
 
 	sys_tree = get_sys_tree(SYS_TREES_O_INDICES);
 	result = generic_toast_delete_optional_wal(&oIndicesToastAPI,
-											   (Pointer) &key, oxid, o_snapshot,
+											   (Pointer) &key, oxid, csn,
 											   sys_tree, table->persistence != RELPERSISTENCE_TEMP);
 	return result;
 }
@@ -1002,7 +1001,7 @@ o_indices_get(ORelOids oids, OIndexType type)
 }
 
 bool
-o_indices_update(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snapshot)
+o_indices_update(OTable *table, OIndexNumber ixNum, OXid oxid, CommitSeqNo csn)
 {
 	OIndex	   *oIndex;
 	OIndexChunkKey key;
@@ -1022,8 +1021,7 @@ o_indices_update(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snap
 	sys_tree = get_sys_tree(SYS_TREES_O_INDICES);
 	result = generic_toast_update_optional_wal(&oIndicesToastAPI,
 											   (Pointer) &key, data, len, oxid,
-											   o_snapshot, sys_tree,
-											   table->persistence != RELPERSISTENCE_TEMP);
+											   csn, sys_tree, table->persistence != RELPERSISTENCE_TEMP);
 	systrees_modify_end(table->persistence != RELPERSISTENCE_TEMP);
 
 	pfree(data);
@@ -1032,8 +1030,8 @@ o_indices_update(OTable *table, OIndexNumber ixNum, OXid oxid, OSnapshot *o_snap
 }
 
 bool
-o_indices_find_table_oids(ORelOids indexOids, OIndexType type, OSnapshot *o_snapshot,
-						  ORelOids *tableOids)
+o_indices_find_table_oids(ORelOids indexOids, OIndexType type,
+						  OSnapshot *oSnapshot, ORelOids *tableOids)
 {
 	OIndexChunkKey key;
 	Pointer		data;
@@ -1044,7 +1042,7 @@ o_indices_find_table_oids(ORelOids indexOids, OIndexType type, OSnapshot *o_snap
 	key.chunknum = 0;
 
 	data = generic_toast_get_any(&oIndicesToastAPI, (Pointer) &key, &dataSize,
-								 o_snapshot, get_sys_tree(SYS_TREES_O_INDICES));
+								 oSnapshot, get_sys_tree(SYS_TREES_O_INDICES));
 	if (data)
 	{
 		memcpy(tableOids, data, sizeof(ORelOids));
@@ -1070,8 +1068,7 @@ o_indices_foreach_oids(OIndexOidsCallback callback, void *arg)
 	chunkKey.chunknum = 0;
 
 	it = o_btree_iterator_create(desc, (Pointer) &chunkKey, BTreeKeyBound,
-								 &o_non_deleted_snapshot,
-								 ForwardScanDirection);
+								 &o_non_deleted_snapshot, ForwardScanDirection);
 
 	tuple = o_btree_iterator_fetch(it, NULL, NULL,
 								   BTreeKeyNone, false, NULL);
@@ -1103,8 +1100,7 @@ o_indices_foreach_oids(OIndexOidsCallback callback, void *arg)
 		chunkKey.chunknum = 0;
 
 		it = o_btree_iterator_create(desc, (Pointer) &chunkKey, BTreeKeyBound,
-									 &o_non_deleted_snapshot,
-									 ForwardScanDirection);
+									 &o_non_deleted_snapshot, ForwardScanDirection);
 		tuple = o_btree_iterator_fetch(it, NULL, NULL,
 									   BTreeKeyNone, false, NULL);
 	}

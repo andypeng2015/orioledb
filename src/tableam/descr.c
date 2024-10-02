@@ -10,7 +10,6 @@
  *
  *-------------------------------------------------------------------------
  */
-
 #include "postgres.h"
 
 #include "orioledb.h"
@@ -192,12 +191,12 @@ orioledb_get_evicted_trees(PG_FUNCTION_ARGS)
 	while (true)
 	{
 		OTuple		tuple;
-		OSnapshot	tuple_o_snapshot;
+		CommitSeqNo tupleCsn;
 		Datum		values[4];
 		bool		nulls[4] = {false};
 		EvictedTreeData *data;
 
-		tuple = o_btree_iterator_fetch(it, &tuple_o_snapshot, NULL,
+		tuple = o_btree_iterator_fetch(it, &tupleCsn, NULL,
 									   BTreeKeyNone, false, NULL);
 		if (O_TUPLE_IS_NULL(tuple))
 			break;

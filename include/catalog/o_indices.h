@@ -72,14 +72,15 @@ extern OIndex *make_o_index(OTable *table, OIndexNumber ixNum);
 extern void o_index_fill_descr(OIndexDescr *descr, OIndex *oIndex, OTable *oTable);
 extern void free_o_index(OIndex *o_index);
 extern bool o_indices_add(OTable *table, OIndexNumber ixNum, OXid oxid,
-						  OSnapshot *o_snapshot);
+						  CommitSeqNo csn);
 extern bool o_indices_del(OTable *table, OIndexNumber ixNum, OXid oxid,
-						  OSnapshot *o_snapshot);
+						  CommitSeqNo csn);
 extern OIndex *o_indices_get(ORelOids oids, OIndexType type);
 extern bool o_indices_update(OTable *table, OIndexNumber ixNum,
-							 OXid oxid, OSnapshot *o_snapshot);
+							 OXid oxid, CommitSeqNo csn);
 extern bool o_indices_find_table_oids(ORelOids indexOids, OIndexType type,
-									  OSnapshot *o_snapshot, ORelOids *tableOids);
+									  OSnapshot *oSnapshot,
+									  ORelOids *tableOids);
 extern void o_indices_foreach_oids(OIndexOidsCallback callback, void *arg);
 
 #endif

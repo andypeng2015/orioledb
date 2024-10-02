@@ -59,6 +59,15 @@ extern OSnapshot o_non_deleted_snapshot;
 		(o_snapshot)->xlogptr = (snapshot)->csnSnapshotData.xlogptr; \
 	} while (false)
 
+#define O_LOAD_SNAPSHOT_CSN(o_snapshot, csnValue) \
+	do { \
+		(o_snapshot)->xmin = 0; \
+		(o_snapshot)->csn = (csnValue); \
+		(o_snapshot)->xlogptr = InvalidXLogRecPtr; \
+	} while (false)
+
+#define XLOG_PTR_ALIGN(ptr) ((ptr) + (ptr) & 1)
+
 extern Size oxid_shmem_needs(void);
 extern void oxid_init_shmem(Pointer ptr, bool found);
 extern bool wait_for_oxid(OXid oxid);
@@ -83,6 +92,8 @@ extern void current_oxid_commit(CommitSeqNo csn);
 extern void current_oxid_abort(void);
 extern CommitSeqNo oxid_get_csn(OXid oxid);
 extern XLogRecPtr oxid_get_xlog_ptr(OXid oxid);
+extern void oxid_match_snapshot(OXid oxid, OSnapshot *snapshot,
+								CommitSeqNo *outCsn, XLogRecPtr *outPtr);
 extern void fill_current_oxid_osnapshot(OXid *oxid, OSnapshot *snapshot);
 extern int	oxid_get_procnum(OXid oxid);
 extern bool xid_is_finished(OXid xid);

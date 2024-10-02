@@ -10,7 +10,6 @@
  *
  *-------------------------------------------------------------------------
  */
-
 #include "postgres.h"
 
 #include "orioledb.h"
@@ -596,7 +595,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 						else	/* Tuple without TOASTed attrs */
 						{
 							tts_orioledb_store_tuple(descr->newTuple, tuple.tuple,
-													 descr, &o_in_progress_snapshot,
+													 descr, COMMITSEQNO_INPROGRESS,
 													 PrimaryIndexNumber, false,
 													 NULL);
 							change->data.tp.newtuple = record_buffer_tuple_slot(ctx->reorder, descr->newTuple);
@@ -644,7 +643,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					else		/* Tuple without TOASTed attrs */
 					{
 						tts_orioledb_store_tuple(descr->newTuple, tuple.tuple,
-												 descr, &o_in_progress_snapshot,
+												 descr, COMMITSEQNO_INPROGRESS,
 												 PrimaryIndexNumber, false,
 												 NULL);
 
@@ -676,7 +675,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					{
 						change->data.tp.clear_toast_afterwards = false;
 						tts_orioledb_store_non_leaf_tuple(descr->oldTuple, tuple.tuple,
-														  descr, &o_in_progress_snapshot,
+														  descr, COMMITSEQNO_INPROGRESS,
 														  PrimaryIndexNumber, false,
 														  NULL);
 						change->data.tp.oldtuple = record_buffer_tuple_slot(ctx->reorder, descr->oldTuple);
@@ -699,7 +698,7 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 						else	/* Tuple without TOASTed attrs */
 						{
 							tts_orioledb_store_non_leaf_tuple(descr->oldTuple, tuple.tuple,
-															  descr, &o_in_progress_snapshot,
+															  descr, COMMITSEQNO_INPROGRESS,
 															  PrimaryIndexNumber, false,
 															  NULL);
 							change->data.tp.oldtuple = record_buffer_tuple_slot(ctx->reorder, descr->oldTuple);

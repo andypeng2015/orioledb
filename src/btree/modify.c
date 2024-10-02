@@ -95,7 +95,7 @@ static OBTreeModifyResult o_btree_normal_modify(BTreeDescr *desc,
 												OTuple tuple, BTreeKeyType tupleType,
 												Pointer key, BTreeKeyType keyType,
 												OXid opOxid,
-												OSnapshot *op_o_snapshot,
+												CommitSeqNo opCsn,
 												RowLockMode lockMode,
 												BTreeLocationHint *hint,
 												BTreeLeafTupleDeletedStatus deleted,
@@ -110,7 +110,7 @@ o_btree_modify_internal(OBTreeFindPageContext *pageFindContext,
 						BTreeOperationType action,
 						OTuple _tuple, BTreeKeyType tupleType,
 						Pointer key, BTreeKeyType keyType,
-						OXid opOxid, OSnapshot *op_o_snapshot,
+						OXid opOxid, CommitSeqNo opCsn,
 						RowLockMode _lockMode,
 						BTreeLeafTupleDeletedStatus deleted,
 						int pageReserveKind,
@@ -131,7 +131,7 @@ o_btree_modify_internal(OBTreeFindPageContext *pageFindContext,
 	context.pageFindContext = pageFindContext;
 	context.replace = false;
 	context.opOxid = opOxid;
-	context.opCsn = op_o_snapshot->csn;
+	context.opCsn = opCsn;
 	context.lockMode = _lockMode;
 	context.hwLockMode = NoLock;
 	context.lockStatus = BTreeModifyNoLock;
@@ -327,7 +327,7 @@ retry:
 			}
 			else if (IsolationUsesXactSnapshot() && IsRelationTree(desc))
 			{
-				if (XACT_INFO_MAP_CSN(context.conflictTupHdr.xactInfo) >= op_o_snapshot->csn)
+				if (XACT_INFO_MAP_CSN(context.conflictTupHdr.xactInfo) >= opCsn)
 				{
 					ereport(ERROR,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
@@ -938,7 +938,7 @@ static OBTreeModifyResult
 o_btree_normal_modify(BTreeDescr *desc, BTreeOperationType action,
 					  OTuple tuple, BTreeKeyType tupleType,
 					  Pointer key, BTreeKeyType keyType,
-					  OXid opOxid, OSnapshot *op_o_snapshot,
+					  OXid opOxid, CommitSeqNo opCsn,
 					  RowLockMode lockMode, BTreeLocationHint *hint,
 					  BTreeLeafTupleDeletedStatus deleted,
 					  BTreeModifyCallbackInfo *callbackInfo)
@@ -978,7 +978,7 @@ o_btree_normal_modify(BTreeDescr *desc, BTreeOperationType action,
 		(void) find_page(&pageFindContext, key, keyType, 0);
 
 	return o_btree_modify_internal(&pageFindContext, action, tuple, tupleType,
-								   key, keyType, opOxid, op_o_snapshot,
+								   key, keyType, opOxid, opCsn,
 								   lockMode, deleted, pageReserveKind,
 								   callbackInfo);
 }
@@ -1068,7 +1068,7 @@ slowpath_unique_check(BTreeDescr *desc, OBTreeFindPageContext *pageFindContext,
 OBTreeModifyResult
 o_btree_insert_unique(BTreeDescr *desc, OTuple tuple, BTreeKeyType tupleType,
 					  Pointer key, BTreeKeyType keyType,
-					  OXid opOxid, OSnapshot *op_o_snapshot,
+					  OXid opOxid, CommitSeqNo opCsn,
 					  RowLockMode lockMode, BTreeLocationHint *hint,
 					  BTreeModifyCallbackInfo *callbackInfo)
 {
@@ -1291,7 +1291,7 @@ retry:
 
 	result = o_btree_modify_internal(&pageFindContext, BTreeOperationInsert,
 									 tuple, tupleType, key,
-									 keyType, opOxid, op_o_snapshot, lockMode,
+									 keyType, opOxid, opCsn, lockMode,
 									 BTreeLeafTupleNonDeleted, pageReserveKind,
 									 callbackInfo);
 
@@ -1303,18 +1303,18 @@ OBTreeModifyResult
 o_btree_modify(BTreeDescr *desc, BTreeOperationType action,
 			   OTuple tuple, BTreeKeyType tupleType,
 			   Pointer key, BTreeKeyType keyType,
-			   OXid oxid, OSnapshot *o_snapshot, RowLockMode lockMode,
+			   OXid oxid, CommitSeqNo csn, RowLockMode lockMode,
 			   BTreeLocationHint *hint, BTreeModifyCallbackInfo *callbackInfo)
 {
 	return o_btree_normal_modify(desc, action, tuple, tupleType,
-								 key, keyType, oxid, o_snapshot, lockMode,
+								 key, keyType, oxid, csn, lockMode,
 								 hint, BTreeLeafTupleNonDeleted, callbackInfo);
 }
 
 OBTreeModifyResult
 o_btree_delete_moved_partitions(BTreeDescr *desc, Pointer key,
 								BTreeKeyType keyType, OXid oxid,
-								OSnapshot *o_snapshot,
+								CommitSeqNo csn,
 								BTreeLocationHint *hint,
 								BTreeModifyCallbackInfo *callbackInfo)
 {
@@ -1324,7 +1324,7 @@ o_btree_delete_moved_partitions(BTreeDescr *desc, Pointer key,
 
 	return o_btree_normal_modify(desc, BTreeOperationDelete,
 								 nullTup, BTreeKeyNone,
-								 key, keyType, oxid, o_snapshot, RowLockUpdate,
+								 key, keyType, oxid, csn, RowLockUpdate,
 								 hint, BTreeLeafTupleMovedPartitions,
 								 callbackInfo);
 }
@@ -1332,7 +1332,7 @@ o_btree_delete_moved_partitions(BTreeDescr *desc, Pointer key,
 OBTreeModifyResult
 o_btree_delete_pk_changed(BTreeDescr *desc, Pointer key,
 						  BTreeKeyType keyType, OXid oxid,
-						  OSnapshot *o_snapshot,
+						  CommitSeqNo csn,
 						  BTreeLocationHint *hint,
 						  BTreeModifyCallbackInfo *callbackInfo)
 {
@@ -1342,7 +1342,7 @@ o_btree_delete_pk_changed(BTreeDescr *desc, Pointer key,
 
 	return o_btree_normal_modify(desc, BTreeOperationDelete,
 								 nullTup, BTreeKeyNone,
-								 key, keyType, oxid, o_snapshot, RowLockUpdate,
+								 key, keyType, oxid, csn, RowLockUpdate,
 								 hint, BTreeLeafTuplePKChanged,
 								 callbackInfo);
 }
@@ -1362,7 +1362,7 @@ o_btree_autonomous_insert(BTreeDescr *desc, OTuple tuple)
 										   tuple, BTreeKeyLeafTuple,
 										   NULL, BTreeKeyNone,
 										   get_current_oxid(),
-										   &o_in_progress_snapshot,
+										   COMMITSEQNO_INPROGRESS,
 										   RowLockUpdate,
 										   NULL, BTreeLeafTupleNonDeleted,
 										   &nullCallbackInfo);
@@ -1382,7 +1382,7 @@ o_btree_autonomous_insert(BTreeDescr *desc, OTuple tuple)
 									   tuple, BTreeKeyLeafTuple,
 									   NULL, BTreeKeyNone,
 									   InvalidOXid,
-									   &o_in_progress_snapshot,
+									   COMMITSEQNO_INPROGRESS,
 									   RowLockUpdate,
 									   NULL, BTreeLeafTupleNonDeleted,
 									   &nullCallbackInfo);
@@ -1408,8 +1408,7 @@ o_btree_autonomous_delete(BTreeDescr *desc, OTuple key, BTreeKeyType keyType,
 			result = o_btree_normal_modify(desc, BTreeOperationDelete,
 										   key, keyType,
 										   NULL, BTreeKeyNone,
-										   get_current_oxid(),
-										   &o_in_progress_snapshot,
+										   get_current_oxid(), COMMITSEQNO_INPROGRESS,
 										   RowLockUpdate,
 										   hint, BTreeLeafTupleNonDeleted,
 										   &nullCallbackInfo);
@@ -1431,8 +1430,7 @@ o_btree_autonomous_delete(BTreeDescr *desc, OTuple key, BTreeKeyType keyType,
 		result = o_btree_normal_modify(desc, BTreeOperationDelete,
 									   key, keyType,
 									   NULL, BTreeKeyNone,
-									   InvalidOXid,
-									   &o_in_progress_snapshot,
+									   InvalidOXid, COMMITSEQNO_INPROGRESS,
 									   RowLockUpdate,
 									   hint, BTreeLeafTupleNonDeleted,
 									   &nullCallbackInfo);

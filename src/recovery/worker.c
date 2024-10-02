@@ -49,19 +49,19 @@ static CommitSeqNo my_ptr;
 static void recovery_queue_process(shm_mq_handle *queue, int id);
 static inline Pointer recovery_queue_read(shm_mq_handle *queue, Size *data_size, int id);
 static void apply_tbl_modify_record(OTableDescr *descr, uint16 type,
-									OTuple p, OXid oxid, OSnapshot *o_snapshot);
+									OTuple p, OXid oxid, CommitSeqNo csn);
 static void apply_tbl_insert(OTableDescr *descr, OTuple tuple,
-							 OXid oxid, OSnapshot *o_snapshot);
+							 OXid oxid, CommitSeqNo csn);
 static void apply_tbl_delete(OTableDescr *descr, OTuple key,
-							 OXid oxid, OSnapshot *o_snapshot);
+							 OXid oxid, CommitSeqNo csn);
 static void apply_tbl_update(OTableDescr *descr, OTuple tuple,
-							 OXid oxid, OSnapshot *o_snapshot);
+							 OXid oxid, CommitSeqNo csn);
 
 typedef struct
 {
 	OTuple		tuple;
 	OTuple		key;
-	OSnapshot	o_snapshot;
+	CommitSeqNo csn;
 } CallbackTupleCopy;
 
 /*
@@ -91,9 +91,9 @@ o_delete_copy_callback(BTreeDescr *descr,
 		copyArg->tuple.formatFlags = tup.formatFlags;
 		memcpy(copyArg->tuple.data, tup.data, sz);
 		if (XACT_INFO_IS_FINISHED(xactInfo))
-			copyArg->o_snapshot.csn = COMMITSEQNO_MAX_NORMAL;
+			copyArg->csn = COMMITSEQNO_MAX_NORMAL;
 		else
-			copyArg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+			copyArg->csn = COMMITSEQNO_INPROGRESS;
 	}
 	return OBTreeCallbackActionDelete;
 }
@@ -122,9 +122,9 @@ o_update_copy_callback(BTreeDescr *descr,
 		copyArg->tuple.formatFlags = tup.formatFlags;
 		memcpy(copyArg->tuple.data, tup.data, sz);
 		if (XACT_INFO_IS_FINISHED(xactInfo))
-			copyArg->o_snapshot.csn = COMMITSEQNO_MAX_NORMAL;
+			copyArg->csn = COMMITSEQNO_MAX_NORMAL;
 		else
-			copyArg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+			copyArg->csn = COMMITSEQNO_INPROGRESS;
 	}
 	return OBTreeCallbackActionUpdate;
 }
@@ -502,12 +502,12 @@ apply_modify_record(OTableDescr *descr, OIndexDescr *id, uint16 type,
 	if (descr && toast_consistent)
 	{
 		/* Modify table */
-		apply_tbl_modify_record(descr, type, p, oxid, &o_in_progress_snapshot);
+		apply_tbl_modify_record(descr, type, p, oxid, COMMITSEQNO_INPROGRESS);
 	}
 	else
 	{
 		o_btree_load_shmem(&id->desc);
-		apply_btree_modify_record(&id->desc, type, p, oxid, &o_in_progress_snapshot);
+		apply_btree_modify_record(&id->desc, type, p, oxid, COMMITSEQNO_INPROGRESS);
 	}
 }
 
@@ -587,19 +587,19 @@ recovery_queue_read(shm_mq_handle *queue, Size *data_size, int id)
  */
 static void
 apply_tbl_modify_record(OTableDescr *descr, uint16 type,
-						OTuple p, OXid oxid, OSnapshot *o_snapshot)
+						OTuple p, OXid oxid, CommitSeqNo csn)
 {
 	o_set_syscache_hooks();
 	switch (type)
 	{
 		case RECOVERY_INSERT:
-			apply_tbl_insert(descr, p, oxid, o_snapshot);
+			apply_tbl_insert(descr, p, oxid, csn);
 			return;
 		case RECOVERY_DELETE:
-			apply_tbl_delete(descr, p, oxid, o_snapshot);
+			apply_tbl_delete(descr, p, oxid, csn);
 			return;
 		case RECOVERY_UPDATE:
-			apply_tbl_update(descr, p, oxid, o_snapshot);
+			apply_tbl_update(descr, p, oxid, csn);
 			return;
 		default:
 			Assert(false);
@@ -610,7 +610,7 @@ apply_tbl_modify_record(OTableDescr *descr, uint16 type,
 
 static void
 apply_tbl_insert(OTableDescr *descr, OTuple tuple,
-				 OXid oxid, OSnapshot *o_snapshot)
+				 OXid oxid, CommitSeqNo csn)
 {
 	OBTreeKeyBound keyBound;
 	OTuple		stuple,
@@ -624,7 +624,7 @@ apply_tbl_insert(OTableDescr *descr, OTuple tuple,
 	O_TUPLE_SET_NULL(stuple);
 
 	tts_orioledb_store_tuple(slot, tuple, descr,
-							 o_snapshot, PrimaryIndexNumber, false, NULL);
+							 csn, PrimaryIndexNumber, false, NULL);
 
 	if (GET_PRIMARY(descr)->primaryIsCtid)
 	{
@@ -670,7 +670,7 @@ apply_tbl_insert(OTableDescr *descr, OTuple tuple,
 		(void) o_btree_modify(&id->desc, BTreeOperationInsert,
 							  cur_tuple, BTreeKeyLeafTuple,
 							  (Pointer) &keyBound, BTreeKeyBound,
-							  oxid, o_snapshot, RowLockUpdate,
+							  oxid, csn, RowLockUpdate,
 							  NULL, &callbackInfo);
 
 		if (!isPrimary)
@@ -687,7 +687,7 @@ apply_tbl_insert(OTableDescr *descr, OTuple tuple,
 
 static void
 apply_tbl_delete(OTableDescr *descr, OTuple key,
-				 OXid oxid, OSnapshot *o_snapshot)
+				 OXid oxid, CommitSeqNo csn)
 {
 	OBTreeModifyResult modify_result;
 	OBTreeKeyBound keyBound;
@@ -721,7 +721,7 @@ apply_tbl_delete(OTableDescr *descr, OTuple key,
 			modify_result = o_btree_modify(&id->desc, BTreeOperationDelete,
 										   nullTup, BTreeKeyNone,
 										   (Pointer) &keyBound, BTreeKeyBound,
-										   oxid, o_snapshot, RowLockUpdate,
+										   oxid, csn, RowLockUpdate,
 										   NULL, &callbackInfo);
 			if (modify_result != OBTreeModifyResultDeleted)
 				return;
@@ -733,7 +733,7 @@ apply_tbl_delete(OTableDescr *descr, OTuple key,
 			}
 
 			tts_orioledb_store_tuple(slot, tupCopy.tuple, descr,
-									 &tupCopy.o_snapshot, PrimaryIndexNumber,
+									 tupCopy.csn, PrimaryIndexNumber,
 									 true, NULL);
 		}
 		else
@@ -753,7 +753,7 @@ apply_tbl_delete(OTableDescr *descr, OTuple key,
 			o_btree_modify(&id->desc, BTreeOperationDelete,
 						   nullTup, BTreeKeyNone,
 						   (Pointer) &keyBound, BTreeKeyBound,
-						   oxid, o_snapshot, RowLockUpdate,
+						   oxid, csn, RowLockUpdate,
 						   NULL, &callbackInfo);
 		}
 	}
@@ -763,7 +763,7 @@ apply_tbl_delete(OTableDescr *descr, OTuple key,
 
 static void
 apply_tbl_update(OTableDescr *descr, OTuple tuple,
-				 OXid oxid, OSnapshot *o_snapshot)
+				 OXid oxid, CommitSeqNo csn)
 {
 	OBTreeModifyResult modify_result;
 	OBTreeKeyBound old_key,
@@ -795,7 +795,7 @@ apply_tbl_update(OTableDescr *descr, OTuple tuple,
 			O_TUPLE_SET_NULL(tupCopy.tuple);
 			modify_result = o_btree_modify(&tree->desc, BTreeOperationUpdate,
 										   tuple, BTreeKeyLeafTuple,
-										   NULL, BTreeKeyNone, oxid, o_snapshot,
+										   NULL, BTreeKeyNone, oxid, csn,
 										   RowLockNoKeyUpdate,
 										   NULL, &callbackInfo);
 			if (modify_result != OBTreeModifyResultUpdated)
@@ -808,9 +808,9 @@ apply_tbl_update(OTableDescr *descr, OTuple tuple,
 			}
 
 			tts_orioledb_store_tuple(new_slot, tuple, descr,
-									 o_snapshot, PrimaryIndexNumber, false, NULL);
+									 csn, PrimaryIndexNumber, false, NULL);
 			tts_orioledb_store_tuple(old_slot, tupCopy.tuple, descr,
-									 &tupCopy.o_snapshot, PrimaryIndexNumber,
+									 tupCopy.csn, PrimaryIndexNumber,
 									 true, NULL);
 		}
 		else
@@ -839,7 +839,7 @@ apply_tbl_update(OTableDescr *descr, OTuple tuple,
 					(void) o_btree_modify(&tree->desc, BTreeOperationDelete,
 										  nullTup, BTreeKeyNone,
 										  (Pointer) &old_key, BTreeKeyBound,
-										  oxid, o_snapshot, RowLockUpdate,
+										  oxid, csn, RowLockUpdate,
 										  NULL, &callbackInfo);
 				}
 
@@ -853,7 +853,7 @@ apply_tbl_update(OTableDescr *descr, OTuple tuple,
 					(void) o_btree_modify(&tree->desc, BTreeOperationInsert,
 										  new_stup, BTreeKeyLeafTuple,
 										  (Pointer) &new_key, BTreeKeyBound,
-										  oxid, o_snapshot, RowLockUpdate,
+										  oxid, csn, RowLockUpdate,
 										  NULL, &callbackInfo);
 					pfree(new_stup.data);
 				}

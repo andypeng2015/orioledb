@@ -41,24 +41,24 @@
 static OTableModifyResult o_tbl_indices_overwrite(OTableDescr *descr,
 												  OBTreeKeyBound *oldPkey,
 												  TupleTableSlot *newSlot,
-												  OXid oxid, OSnapshot *o_snapshot,
+												  OXid oxid, CommitSeqNo csn,
 												  BTreeLocationHint *hint,
 												  OModifyCallbackArg *arg);
 static OTableModifyResult o_tbl_indices_reinsert(OTableDescr *descr,
 												 OBTreeKeyBound *oldPkey,
 												 OBTreeKeyBound *newPkey,
 												 TupleTableSlot *newSlot,
-												 OXid oxid, OSnapshot *o_snapshot,
+												 OXid oxid, CommitSeqNo csn,
 												 BTreeLocationHint *hint,
 												 OModifyCallbackArg *arg);
 static OTableModifyResult o_tbl_indices_delete(OTableDescr *descr,
 											   OBTreeKeyBound *key,
-											   OXid oxid, OSnapshot *o_snapshot,
+											   OXid oxid, CommitSeqNo csn,
 											   BTreeLocationHint *hint,
 											   OModifyCallbackArg *arg);
 static void o_toast_insert_values(Relation rel, OTableDescr *descr,
-								  TupleTableSlot *slot, OXid oxid, OSnapshot *o_snapshot);
-static inline bool o_callback_is_modified(OXid oxid, OSnapshot *o_snapshot, OTupleXactInfo xactInfo);
+								  TupleTableSlot *slot, OXid oxid, CommitSeqNo csn);
+static inline bool o_callback_is_modified(OXid oxid, CommitSeqNo csn, OTupleXactInfo xactInfo);
 static OBTreeModifyCallbackAction o_insert_callback(BTreeDescr *descr,
 													OTuple tup, OTuple *newtup,
 													OXid oxid, OTupleXactInfo xactInfo,
@@ -153,7 +153,7 @@ update_arg_get_slot(OModifyCallbackArg *arg)
 
 TupleTableSlot *
 o_tbl_insert(OTableDescr *descr, Relation relation,
-			 TupleTableSlot *slot, OXid oxid, OSnapshot *o_snapshot)
+			 TupleTableSlot *slot, OXid oxid, CommitSeqNo csn)
 {
 	OTableModifyResult mres;
 	OTuple		tup;
@@ -190,7 +190,7 @@ o_tbl_insert(OTableDescr *descr, Relation relation,
 								false);
 
 	mres.success = (o_tbl_index_insert(descr, descr->indices[0], NULL, slot,
-									   oxid, o_snapshot, &callbackInfo) == OBTreeModifyResultInserted);
+									   oxid, csn, &callbackInfo) == OBTreeModifyResultInserted);
 	if (!mres.success)
 	{
 		mres.failedIxNum = 0;
@@ -203,7 +203,7 @@ o_tbl_insert(OTableDescr *descr, Relation relation,
 		o_report_duplicate(relation, descr->indices[mres.failedIxNum], slot);
 	}
 
-	o_toast_insert_values(relation, descr, slot, oxid, o_snapshot);
+	o_toast_insert_values(relation, descr, slot, oxid, csn);
 
 	/* Tuple might be changes in the callback */
 	tup = tts_orioledb_form_tuple(slot, descr);
@@ -255,12 +255,12 @@ o_tbl_lock(OTableDescr *descr, OBTreeKeyBound *pkey, LockTupleMode mode,
 	O_TUPLE_SET_NULL(nullTup);
 	res = o_btree_modify(&GET_PRIMARY(descr)->desc, BTreeOperationLock,
 						 nullTup, BTreeKeyNone, (Pointer) pkey, BTreeKeyBound,
-						 oxid, &larg->o_snapshot, lock_mode,
+						 oxid, larg->csn, lock_mode,
 						 hint, &callbackInfo);
 
 	Assert(res == OBTreeModifyResultLocked || res == OBTreeModifyResultFound || res == OBTreeModifyResultNotFound);
 
-	larg->selfModified = COMMITSEQNO_IS_INPROGRESS(larg->o_snapshot.csn) &&
+	larg->selfModified = COMMITSEQNO_IS_INPROGRESS(larg->csn) &&
 		(larg->oxid == get_current_oxid_if_any()) &&
 		UndoLocationIsValid(larg->tupUndoLocation) &&
 		(larg->tupUndoLocation >= saved_undo_location[UndoLogRegular]);
@@ -279,10 +279,12 @@ o_tbl_insert_with_arbiter(Relation rel,
 	InsertOnConflictCallbackArg ioc_arg;
 	UndoStackLocations undoStackLocations;
 	OTuple		tup;
-	OSnapshot	o_snapshot;
+	OSnapshot	oSnapshot;
+	CommitSeqNo csn;
 	OXid		oxid;
 
-	fill_current_oxid_osnapshot(&oxid, &o_snapshot);
+	fill_current_oxid_osnapshot(&oxid, &oSnapshot);
+	csn = oSnapshot.csn;
 	undoStackLocations = get_cur_undo_locations(UndoLogRegular);
 
 	ioc_arg.desc = descr;
@@ -294,7 +296,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 
 	while (true)
 	{
-		OSnapshot	saved_o_snapshot = o_snapshot;
+		CommitSeqNo save_csn = csn;
 		int			i,
 					failedIndexNumber = -1;
 		bool		success = true;
@@ -311,7 +313,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 			ExecClearTuple(lockedSlot);
 		ioc_arg.copyPrimaryOxid = false;
 		ioc_arg.conflictOxid = InvalidOXid;
-		ioc_arg.o_snapshot = o_snapshot;
+		ioc_arg.csn = csn;
 
 		for (i = 0; (i < descr->nIndices) && success; i++)
 		{
@@ -323,7 +325,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 
 			ioc_arg.conflictIxNum = i;
 			result = o_tbl_index_insert(descr, descr->indices[i], NULL, slot,
-										oxid, &o_snapshot, &callbackInfo);
+										oxid, csn, &callbackInfo);
 			if (result != OBTreeModifyResultInserted)
 			{
 				success = false;
@@ -342,7 +344,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 
 			ioc_arg.conflictIxNum = -1;
 			result = o_tbl_index_insert(descr, descr->indices[i], NULL, slot,
-										oxid, &o_snapshot, &callbackInfo);
+										oxid, csn, &callbackInfo);
 			if (result != OBTreeModifyResultInserted)
 			{
 				success = false;
@@ -356,7 +358,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 			BTreeDescr *primary = &GET_PRIMARY(descr)->desc;
 
 			/* all inserts are OK */
-			tts_orioledb_insert_toast_values(slot, descr, oxid, &o_snapshot);
+			tts_orioledb_insert_toast_values(slot, descr, oxid, csn);
 
 			tup = tts_orioledb_form_tuple(slot, descr);
 			if (primary->storageType == BTreeStoragePersistence)
@@ -381,7 +383,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 				Assert(ioc_arg.scanSlot == lockedSlot);
 				Assert(!TTS_EMPTY(lockedSlot));
 
-				if (COMMITSEQNO_IS_INPROGRESS(ioc_arg.o_snapshot.csn) &&
+				if (COMMITSEQNO_IS_INPROGRESS(ioc_arg.csn) &&
 					(ioc_arg.oxid == get_current_oxid_if_any()) &&
 					UndoLocationIsValid(ioc_arg.tupUndoLocation) &&
 					(ioc_arg.tupUndoLocation >= saved_undo_location[UndoLogRegular]))
@@ -411,7 +413,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 			continue;
 		}
 
-		o_snapshot = ioc_arg.o_snapshot;
+		csn = ioc_arg.csn;
 
 		if (lockedSlot)
 		{
@@ -436,7 +438,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 			larg.rel = rel;
 			larg.descr = descr;
 			larg.oxid = oxid;
-			larg.o_snapshot = o_snapshot;
+			larg.csn = csn;
 			larg.scanSlot = lockedSlot;
 			larg.waitPolicy = LockWaitBlock;
 			larg.wouldBlock = false;
@@ -458,7 +460,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 			if (lockResult == OBTreeModifyResultNotFound)
 			{
 				/* concurrent modify happens */
-				o_snapshot = saved_o_snapshot;
+				csn = save_csn;
 				continue;
 			}
 			Assert(!TTS_EMPTY(lockedSlot));
@@ -478,7 +480,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 				release_undo_size(UndoLogRegular);
 				apply_undo_stack(UndoLogRegular, oxid, &undoStackLocations, true);
 				oxid_notify_all();
-				o_snapshot = saved_o_snapshot;
+				csn = save_csn;
 				continue;
 			}
 		}
@@ -492,7 +494,7 @@ o_tbl_insert_with_arbiter(Relation rel,
 OTableModifyResult
 o_tbl_update(OTableDescr *descr, TupleTableSlot *slot,
 			 OBTreeKeyBound *oldPkey, Relation rel, OXid oxid,
-			 OSnapshot *o_snapshot, BTreeLocationHint *hint,
+			 CommitSeqNo csn, BTreeLocationHint *hint,
 			 OModifyCallbackArg *arg)
 {
 	TupleTableSlot *oldSlot;
@@ -524,17 +526,17 @@ o_tbl_update(OTableDescr *descr, TupleTableSlot *slot,
 
 	if (is_keys_eq(&GET_PRIMARY(descr)->desc, oldPkey, &newPkey))
 	{
-		mres = o_tbl_indices_overwrite(descr, &newPkey, slot, oxid, o_snapshot,
+		mres = o_tbl_indices_overwrite(descr, &newPkey, slot, oxid, csn,
 									   hint, arg);
 	}
 	else
 	{
 		mres = o_tbl_indices_reinsert(descr, oldPkey, &newPkey, slot,
-									  oxid, o_snapshot, hint, arg);
+									  oxid, csn, hint, arg);
 	}
-	o_snapshot = &arg->o_snapshot;
+	csn = arg->csn;
 
-	mres.self_modified = COMMITSEQNO_IS_INPROGRESS(arg->o_snapshot.csn) &&
+	mres.self_modified = COMMITSEQNO_IS_INPROGRESS(arg->csn) &&
 		(arg->oxid == get_current_oxid_if_any()) &&
 		UndoLocationIsValid(arg->tup_undo_location) &&
 		(arg->tup_undo_location >= saved_undo_location[UndoLogRegular]);
@@ -563,7 +565,7 @@ o_tbl_update(OTableDescr *descr, TupleTableSlot *slot,
 			oldSlot = mres.oldTuple;
 			mres.failedIxNum = TOASTIndexNumber;
 			mres.success = tts_orioledb_update_toast_values(oldSlot, slot, descr,
-															oxid, o_snapshot);
+															oxid, csn);
 
 			if (mres.success &&
 				primary->desc.storageType == BTreeStoragePersistence)
@@ -579,11 +581,11 @@ o_tbl_update(OTableDescr *descr, TupleTableSlot *slot,
 			/* reinsert TOAST value */
 			mres.failedIxNum = TOASTIndexNumber;
 			/* insert new value in TOAST table */
-			mres.success = tts_orioledb_insert_toast_values(slot, descr, oxid, o_snapshot);
+			mres.success = tts_orioledb_insert_toast_values(slot, descr, oxid, csn);
 			if (mres.success)
 			{
 				/* remove old value from TOAST table */
-				mres.success = tts_orioledb_remove_toast_values(oldSlot, descr, oxid, o_snapshot);
+				mres.success = tts_orioledb_remove_toast_values(oldSlot, descr, oxid, csn);
 			}
 
 			if (mres.success &&
@@ -612,15 +614,15 @@ o_tbl_update(OTableDescr *descr, TupleTableSlot *slot,
 
 OTableModifyResult
 o_tbl_delete(OTableDescr *descr, OBTreeKeyBound *primary_key,
-			 OXid oxid, OSnapshot *o_snapshot, BTreeLocationHint *hint,
+			 OXid oxid, CommitSeqNo csn, BTreeLocationHint *hint,
 			 OModifyCallbackArg *arg)
 {
 	OTableModifyResult result;
 
 	result = o_tbl_indices_delete(descr, primary_key, oxid,
-								  o_snapshot, hint, arg);
+								  csn, hint, arg);
 
-	result.self_modified = COMMITSEQNO_IS_INPROGRESS(arg->o_snapshot.csn) &&
+	result.self_modified = COMMITSEQNO_IS_INPROGRESS(arg->csn) &&
 		(arg->oxid == get_current_oxid_if_any()) &&
 		UndoLocationIsValid(arg->tup_undo_location) &&
 		(arg->tup_undo_location >= saved_undo_location[UndoLogRegular]);
@@ -649,9 +651,9 @@ o_tbl_delete(OTableDescr *descr, OBTreeKeyBound *primary_key,
 			OIndexDescr *primary = GET_PRIMARY(descr);
 			OTuple		primary_tuple;
 
-			o_snapshot = &arg->o_snapshot;
+			csn = arg->csn;
 			/* if tuple has been deleted from index trees, remove TOAST values */
-			if (!tts_orioledb_remove_toast_values(result.oldTuple, descr, oxid, o_snapshot))
+			if (!tts_orioledb_remove_toast_values(result.oldTuple, descr, oxid, csn))
 			{
 				result.success = false;
 				result.failedIxNum = TOASTIndexNumber;
@@ -736,7 +738,7 @@ o_update_secondary_index(OIndexDescr *id,
 						 OTuple new_ix_tup,
 						 TupleTableSlot *oldSlot,
 						 OXid oxid,
-						 OSnapshot *o_snapshot)
+						 CommitSeqNo csn)
 {
 	OTableModifyResult res;
 	OBTreeKeyBound old_key,
@@ -761,7 +763,7 @@ o_update_secondary_index(OIndexDescr *id,
 		res.success = o_btree_modify(&id->desc, BTreeOperationDelete,
 									 nullTup, BTreeKeyNone,
 									 (Pointer) &old_key, BTreeKeyBound,
-									 oxid, o_snapshot, RowLockUpdate,
+									 oxid, csn, RowLockUpdate,
 									 NULL, &callbackInfo) == OBTreeModifyResultDeleted;
 	else
 		res.success = true;
@@ -780,12 +782,12 @@ o_update_secondary_index(OIndexDescr *id,
 			res.success = o_btree_modify(&id->desc, BTreeOperationInsert,
 										 new_ix_tup, BTreeKeyLeafTuple,
 										 (Pointer) &new_key, BTreeKeyBound,
-										 oxid, o_snapshot, RowLockUpdate,
+										 oxid, csn, RowLockUpdate,
 										 NULL, &callbackInfo) == OBTreeModifyResultInserted;
 		else
 			res.success = o_btree_insert_unique(&id->desc, new_ix_tup, BTreeKeyLeafTuple,
 												(Pointer) &new_key, BTreeKeyBound,
-												oxid, o_snapshot, RowLockUpdate,
+												oxid, csn, RowLockUpdate,
 												NULL, &callbackInfo) == OBTreeModifyResultInserted;
 
 		if (!res.success)
@@ -801,7 +803,7 @@ static OTableModifyResult
 o_tbl_indices_overwrite(OTableDescr *descr,
 						OBTreeKeyBound *oldPkey,
 						TupleTableSlot *newSlot,
-						OXid oxid, OSnapshot *o_snapshot,
+						OXid oxid, CommitSeqNo csn,
 						BTreeLocationHint *hint,
 						OModifyCallbackArg *arg)
 {
@@ -826,7 +828,7 @@ o_tbl_indices_overwrite(OTableDescr *descr,
 	modify_result = o_btree_modify(&GET_PRIMARY(descr)->desc, BTreeOperationUpdate,
 								   newTup, BTreeKeyLeafTuple,
 								   (Pointer) oldPkey, BTreeKeyBound,
-								   oxid, o_snapshot, RowLockNoKeyUpdate,
+								   oxid, csn, RowLockNoKeyUpdate,
 								   hint, &callbackInfo);
 
 	if (modify_result == OBTreeModifyResultLocked)
@@ -839,6 +841,7 @@ o_tbl_indices_overwrite(OTableDescr *descr,
 	}
 
 	result.success = modify_result == OBTreeModifyResultUpdated;
+	csn = arg->csn;
 
 	if (modify_result == OBTreeModifyResultUpdated)
 	{
@@ -871,7 +874,7 @@ o_tbl_indices_reinsert(OTableDescr *descr,
 					   OBTreeKeyBound *oldPkey,
 					   OBTreeKeyBound *newPkey,
 					   TupleTableSlot *newSlot,
-					   OXid oxid, OSnapshot *o_snapshot,
+					   OXid oxid, CommitSeqNo csn,
 					   BTreeLocationHint *hint, OModifyCallbackArg *arg)
 {
 	OTableModifyResult result;
@@ -902,7 +905,7 @@ o_tbl_indices_reinsert(OTableDescr *descr,
 
 	modify_result = o_btree_delete_pk_changed(&GET_PRIMARY(descr)->desc,
 											  (Pointer) oldPkey, BTreeKeyBound,
-											  oxid, o_snapshot, hint,
+											  oxid, csn, hint,
 											  &deleteCallbackInfo);
 
 	if (modify_result == OBTreeModifyResultLocked)
@@ -932,7 +935,7 @@ o_tbl_indices_reinsert(OTableDescr *descr,
 	inserted = o_btree_modify(&GET_PRIMARY(descr)->desc, BTreeOperationInsert,
 							  newTup, BTreeKeyLeafTuple,
 							  (Pointer) newPkey, BTreeKeyBound,
-							  oxid, o_snapshot, RowLockUpdate,
+							  oxid, csn, RowLockUpdate,
 							  NULL, &insertCallbackInfo) == OBTreeModifyResultInserted;
 	((OTableSlot *) newSlot)->version = o_tuple_get_version(newTup);
 
@@ -955,7 +958,7 @@ o_tbl_indices_reinsert(OTableDescr *descr,
 
 OTableModifyResult
 o_tbl_index_delete(OIndexDescr *id, OIndexNumber ix_num, TupleTableSlot *slot,
-				   OXid oxid, OSnapshot *o_snapshot)
+				   OXid oxid, CommitSeqNo csn)
 {
 	OTableModifyResult result;
 	OBTreeModifyResult res;
@@ -970,7 +973,7 @@ o_tbl_index_delete(OIndexDescr *id, OIndexNumber ix_num, TupleTableSlot *slot,
 	res = o_btree_modify(&id->desc, BTreeOperationDelete,
 						 nullTup, BTreeKeyNone,
 						 (Pointer) &bound, BTreeKeyBound,
-						 oxid, o_snapshot, RowLockUpdate,
+						 oxid, csn, RowLockUpdate,
 						 NULL, &callbackInfo);
 
 	result.success = (res == OBTreeModifyResultDeleted);
@@ -985,7 +988,7 @@ o_tbl_index_delete(OIndexDescr *id, OIndexNumber ix_num, TupleTableSlot *slot,
 /* Returns TupleTableSlot of old tuple as OTableModifyResult.result */
 static OTableModifyResult
 o_tbl_indices_delete(OTableDescr *descr, OBTreeKeyBound *key,
-					 OXid oxid, OSnapshot *o_snapshot, BTreeLocationHint *hint,
+					 OXid oxid, CommitSeqNo csn, BTreeLocationHint *hint,
 					 OModifyCallbackArg *arg)
 {
 	OTableModifyResult result;
@@ -1009,15 +1012,16 @@ o_tbl_indices_delete(OTableDescr *descr, OBTreeKeyBound *key,
 		res = o_btree_modify(&GET_PRIMARY(descr)->desc, BTreeOperationDelete,
 							 nullTup, BTreeKeyNone,
 							 (Pointer) key, BTreeKeyBound,
-							 oxid, o_snapshot, RowLockUpdate,
+							 oxid, csn, RowLockUpdate,
 							 hint, &callbackInfo);
 	else
 		res = o_btree_delete_moved_partitions(&GET_PRIMARY(descr)->desc,
 											  (Pointer) key, BTreeKeyBound,
-											  oxid, o_snapshot, hint,
+											  oxid, csn, hint,
 											  &callbackInfo);
 
 	slot = update_arg_get_slot(arg);
+	csn = arg->csn;
 
 	if (res == OBTreeModifyResultLocked)
 	{
@@ -1047,7 +1051,7 @@ o_tbl_index_insert(OTableDescr *descr,
 				   OIndexDescr *id,
 				   OTuple *own_tup,
 				   TupleTableSlot *slot,
-				   OXid oxid, OSnapshot *o_snapshot,
+				   OXid oxid, CommitSeqNo csn,
 				   BTreeModifyCallbackInfo *callbackInfo)
 {
 	BTreeDescr *bd = &id->desc;
@@ -1084,12 +1088,12 @@ o_tbl_index_insert(OTableDescr *descr,
 		result = o_btree_modify(bd, BTreeOperationInsert,
 								tup, BTreeKeyLeafTuple,
 								(Pointer) &knew, BTreeKeyBound,
-								oxid, o_snapshot, RowLockUpdate,
+								oxid, csn, RowLockUpdate,
 								NULL, callbackInfo) == OBTreeModifyResultInserted;
 	else
 		result = o_btree_insert_unique(bd, tup, BTreeKeyLeafTuple,
 									   (Pointer) &knew, BTreeKeyBound,
-									   oxid, o_snapshot, RowLockUpdate,
+									   oxid, csn, RowLockUpdate,
 									   NULL, callbackInfo) == OBTreeModifyResultInserted;
 
 	((OTableSlot *) slot)->version = o_tuple_get_version(tup);
@@ -1101,9 +1105,9 @@ o_tbl_index_insert(OTableDescr *descr,
 
 static void
 o_toast_insert_values(Relation rel, OTableDescr *descr,
-					  TupleTableSlot *slot, OXid oxid, OSnapshot *o_snapshot)
+					  TupleTableSlot *slot, OXid oxid, CommitSeqNo csn)
 {
-	if (!tts_orioledb_insert_toast_values(slot, descr, oxid, o_snapshot))
+	if (!tts_orioledb_insert_toast_values(slot, descr, oxid, csn))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
@@ -1206,12 +1210,12 @@ o_check_tbl_delete_mres(OTableModifyResult mres,
 
 /* returns true if tuple was changed by concurrent transaction. */
 static inline bool
-o_callback_is_modified(OXid oxid, OSnapshot *o_snapshot, OTupleXactInfo xactInfo)
+o_callback_is_modified(OXid oxid, CommitSeqNo csn, OTupleXactInfo xactInfo)
 {
 	if (XACT_INFO_OXID_EQ(xactInfo, oxid))
 		return false;
 
-	if (XACT_INFO_IS_FINISHED(xactInfo) && XACT_INFO_MAP_CSN(xactInfo) >= o_snapshot->csn)
+	if (XACT_INFO_IS_FINISHED(xactInfo) && XACT_INFO_MAP_CSN(xactInfo) >= csn)
 	{
 		if (IsolationUsesXactSnapshot())
 		{
@@ -1226,7 +1230,7 @@ o_callback_is_modified(OXid oxid, OSnapshot *o_snapshot, OTupleXactInfo xactInfo
 
 static void
 copy_tuple_to_slot(OTuple tup, TupleTableSlot *slot, OTableDescr *descr,
-				   OSnapshot *o_snapshot, OIndexNumber ix_num,
+				   CommitSeqNo csn, OIndexNumber ix_num,
 				   BTreeLocationHint *hint)
 {
 	OIndexDescr *id = descr->indices[ix_num];
@@ -1236,7 +1240,7 @@ copy_tuple_to_slot(OTuple tup, TupleTableSlot *slot, OTableDescr *descr,
 	copy.data = (Pointer) MemoryContextAlloc(slot->tts_mcxt, sz);
 	copy.formatFlags = tup.formatFlags;
 	memcpy(copy.data, tup.data, sz);
-	tts_orioledb_store_tuple(slot, copy, descr, o_snapshot, ix_num, true, hint);
+	tts_orioledb_store_tuple(slot, copy, descr, csn, ix_num, true, hint);
 }
 
 static OBTreeModifyCallbackAction
@@ -1320,22 +1324,22 @@ o_insert_with_arbiter_modify_callback(BTreeDescr *descr,
 	{
 		bool		modified;
 
-		modified = o_callback_is_modified(ioc_arg->oxid, &ioc_arg->o_snapshot, xactInfo);
+		modified = o_callback_is_modified(ioc_arg->oxid, ioc_arg->csn, xactInfo);
 
 		/* Updates current csn */
 		if (XACT_INFO_IS_FINISHED(xactInfo))
 		{
-			ioc_arg->o_snapshot.csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : ioc_arg->o_snapshot.csn;
+			ioc_arg->csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : ioc_arg->csn;
 		}
 		else
 		{
-			ioc_arg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+			ioc_arg->csn = COMMITSEQNO_INPROGRESS;
 			ioc_arg->oxid = XACT_INFO_GET_OXID(xactInfo);
 			ioc_arg->tupUndoLocation = UndoLocationGetValue(location);
 		}
 
 		copy_tuple_to_slot(tup, ioc_arg->scanSlot, ioc_arg->desc,
-						   &ioc_arg->o_snapshot, ioc_arg->conflictIxNum, hint);
+						   ioc_arg->csn, ioc_arg->conflictIxNum, hint);
 
 		if (ioc_arg->conflictIxNum == PrimaryIndexNumber)
 		{
@@ -1360,13 +1364,13 @@ o_delete_callback(BTreeDescr *descr,
 	if (descr->type != oIndexPrimary)
 		return OBTreeCallbackActionDelete;
 
-	modified = o_callback_is_modified(o_arg->oxid, &o_arg->o_snapshot, xactInfo);
+	modified = o_callback_is_modified(o_arg->oxid, o_arg->csn, xactInfo);
 
 	if (XACT_INFO_IS_FINISHED(xactInfo))
-		o_arg->o_snapshot.csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->o_snapshot.csn;
+		o_arg->csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->csn;
 	else
 	{
-		o_arg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_arg->csn = COMMITSEQNO_INPROGRESS;
 		o_arg->oxid = XACT_INFO_GET_OXID(xactInfo);
 		o_arg->tup_undo_location = location;
 	}
@@ -1376,7 +1380,7 @@ o_delete_callback(BTreeDescr *descr,
 	if (!modified || (o_arg->options & TABLE_MODIFY_LOCK_UPDATED))
 	{
 		copy_tuple_to_slot(tup, update_arg_get_slot(o_arg), o_arg->descr,
-						   &o_arg->o_snapshot, PrimaryIndexNumber, hint);
+						   o_arg->csn, PrimaryIndexNumber, hint);
 	}
 
 	if (!modified)
@@ -1407,13 +1411,13 @@ o_delete_deleted_callback(BTreeDescr *desc,
 	if (desc->type != oIndexPrimary)
 		return OBTreeCallbackActionDelete;
 
-	modified = o_callback_is_modified(o_arg->oxid, &o_arg->o_snapshot, xactInfo);
+	modified = o_callback_is_modified(o_arg->oxid, o_arg->csn, xactInfo);
 
 	if (XACT_INFO_IS_FINISHED(xactInfo))
-		o_arg->o_snapshot.csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->o_snapshot.csn;
+		o_arg->csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->csn;
 	else
 	{
-		o_arg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_arg->csn = COMMITSEQNO_INPROGRESS;
 		o_arg->oxid = XACT_INFO_GET_OXID(xactInfo);
 		o_arg->tup_undo_location = location;
 	}
@@ -1446,13 +1450,13 @@ o_update_callback(BTreeDescr *descr,
 		o_arg->newSlot->tuple = *newtup;
 	}
 
-	modified = o_callback_is_modified(o_arg->oxid, &o_arg->o_snapshot, xactInfo);
+	modified = o_callback_is_modified(o_arg->oxid, o_arg->csn, xactInfo);
 
 	if (XACT_INFO_IS_FINISHED(xactInfo))
-		o_arg->o_snapshot.csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->o_snapshot.csn;
+		o_arg->csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->csn;
 	else
 	{
-		o_arg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_arg->csn = COMMITSEQNO_INPROGRESS;
 		o_arg->oxid = XACT_INFO_GET_OXID(xactInfo);
 		o_arg->tup_undo_location = location;
 	}
@@ -1461,7 +1465,7 @@ o_update_callback(BTreeDescr *descr,
 	if (!modified || (o_arg->options & TABLE_MODIFY_LOCK_UPDATED))
 	{
 		slot = update_arg_get_slot(o_arg);
-		copy_tuple_to_slot(tup, slot, o_arg->descr, &o_arg->o_snapshot,
+		copy_tuple_to_slot(tup, slot, o_arg->descr, o_arg->csn,
 						   PrimaryIndexNumber, hint);
 		if (tts_orioledb_modified(slot, &o_arg->newSlot->base, o_arg->keyAttrs))
 			*lock_mode = RowLockUpdate;
@@ -1494,13 +1498,13 @@ o_update_deleted_callback(BTreeDescr *descr,
 
 	o_arg->deleted = deleted;
 
-	modified = o_callback_is_modified(o_arg->oxid, &o_arg->o_snapshot, xactInfo);
+	modified = o_callback_is_modified(o_arg->oxid, o_arg->csn, xactInfo);
 
 	if (XACT_INFO_IS_FINISHED(xactInfo))
-		o_arg->o_snapshot.csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->o_snapshot.csn;
+		o_arg->csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->csn;
 	else
 	{
-		o_arg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_arg->csn = COMMITSEQNO_INPROGRESS;
 		o_arg->oxid = XACT_INFO_GET_OXID(xactInfo);
 		o_arg->tup_undo_location = location;
 	}
@@ -1545,20 +1549,20 @@ o_lock_modify_callback(BTreeDescr *descr, OTuple tup, OTuple *newtup,
 	OLockCallbackArg *o_arg = (OLockCallbackArg *) arg;
 	TupleTableSlot *slot = o_arg->scanSlot;
 
-	o_arg->modified = o_callback_is_modified(o_arg->oxid, &o_arg->o_snapshot, xactInfo);
+	o_arg->modified = o_callback_is_modified(o_arg->oxid, o_arg->csn, xactInfo);
 
 	if (XACT_INFO_IS_FINISHED(xactInfo))
 	{
-		o_arg->o_snapshot.csn = o_arg->modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->o_snapshot.csn;
+		o_arg->csn = o_arg->modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->csn;
 	}
 	else
 	{
-		o_arg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_arg->csn = COMMITSEQNO_INPROGRESS;
 		o_arg->oxid = XACT_INFO_GET_OXID(xactInfo);
 		o_arg->tupUndoLocation = UndoLocationGetValue(location);
 	}
 
-	copy_tuple_to_slot(tup, slot, o_arg->descr, &o_arg->o_snapshot,
+	copy_tuple_to_slot(tup, slot, o_arg->descr, o_arg->csn,
 					   PrimaryIndexNumber, hint);
 
 	return OBTreeCallbackActionLock;
@@ -1576,17 +1580,17 @@ o_lock_deleted_callback(BTreeDescr *descr,
 	OLockCallbackArg *o_arg = (OLockCallbackArg *) arg;
 	bool		modified;
 
-	modified = o_callback_is_modified(o_arg->oxid, &o_arg->o_snapshot, xactInfo);
+	modified = o_callback_is_modified(o_arg->oxid, o_arg->csn, xactInfo);
 
 	o_arg->deleted = deleted;
 
 	if (XACT_INFO_IS_FINISHED(xactInfo))
 	{
-		o_arg->o_snapshot.csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->o_snapshot.csn;
+		o_arg->csn = modified ? (XACT_INFO_MAP_CSN(xactInfo) + 1) : o_arg->csn;
 	}
 	else
 	{
-		o_arg->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_arg->csn = COMMITSEQNO_INPROGRESS;
 		o_arg->oxid = XACT_INFO_GET_OXID(xactInfo);
 		o_arg->tupUndoLocation = UndoLocationGetValue(location);
 	}
