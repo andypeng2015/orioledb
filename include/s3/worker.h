@@ -64,6 +64,11 @@ typedef struct
 			bool		delete;
 			char		filename[FLEXIBLE_ARRAY_MEMBER];
 		}			writeRootFile;
+		struct
+		{
+			uint32		chkpNum;
+			char		filename[FLEXIBLE_ARRAY_MEMBER];
+		}			writePGFile;
 	}			typeSpecific;
 } S3Task;
 
@@ -86,8 +91,7 @@ extern S3TaskLocation s3_schedule_undo_file_write(uint64 fileNum);
 extern S3TaskLocation s3_schedule_downlink_load(struct BTreeDescr *desc,
 												uint64 downlink);
 extern S3TaskLocation s3_schedule_root_file_write(char *filename, bool delete);
-extern S3TaskLocation s3_schedule_pg_file_write(uint32 chkpNum, char *filename,
-												bool delete);
+extern S3TaskLocation s3_schedule_pg_file_write(uint32 chkpNum, char *filename);
 extern void s3_load_file_part(uint32 chkpNum, Oid datoid, Oid relnode,
 							  int32 segNum, int32 partNum);
 extern void s3_load_map_file(uint32 chkpNum, Oid datoid, Oid relnode);

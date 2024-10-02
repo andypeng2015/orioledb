@@ -555,7 +555,7 @@ s3_backup_scan_dir(S3BackupState *state, const char *path,
 			if (statbuf.st_size < SMALL_FILE_THRESHOLD)
 				location = accumulate_small_file(state, pathbuf, statbuf.st_size);
 			else
-				location = s3_schedule_pg_file_write(state->chkpNum, pathbuf, false);
+				location = s3_schedule_pg_file_write(state->chkpNum, pathbuf);
 			maxLocation = Max(maxLocation, location);
 		}
 		else

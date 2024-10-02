@@ -42,21 +42,31 @@
 
 #define PGDATA_CRC_FILENAME			ORIOLEDB_DATA_DIR "/pgdata.crc"
 
+typedef struct S3WorkerCtl
+{
+	S3TaskLocation location;
+	bool		flushPgdataCrc;
+
+	Latch	   *latch;
+} S3WorkerCtl;
+
 static volatile sig_atomic_t shutdown_requested = false;
-static volatile S3TaskLocation *workers_locations = NULL;
+static volatile S3WorkerCtl *workers_ctl = NULL;
 
 static HTAB		   *pgdata_hash = NULL;
 static StringInfo	pgdata_crc_buf = NULL;
 
 static HTAB *init_pgdata_hash(void);
-static bool check_pgdata_file_changed(S3Task *task, Pointer new_data, uint64 size);
+static void flush_pgdata_hash(int num);
+static bool check_pgdata_file_changed(const char *filename, Pointer new_data,
+									  uint64 size);
 
 Size
 s3_workers_shmem_needs(void)
 {
 	Size		size;
 
-	size = CACHELINEALIGN(sizeof(S3TaskLocation) * s3_num_workers);
+	size = CACHELINEALIGN(sizeof(S3WorkerCtl) * s3_num_workers);
 
 	return size;
 }
@@ -66,10 +76,15 @@ s3_workers_init_shmem(Pointer ptr, bool found)
 {
 	int			i;
 
-	workers_locations = (S3TaskLocation *) ptr;
+	workers_ctl = (S3WorkerCtl *) ptr;
 
 	for (i = 0; i < s3_num_workers; i++)
-		workers_locations[i] = InvalidS3TaskLocation;
+	{
+		workers_ctl[i].location = InvalidS3TaskLocation;
+		workers_ctl[i].flushPgdataCrc = false;
+
+		workers_ctl[i].latch = NULL;
+	}
 }
 
 static void
@@ -107,8 +122,7 @@ s3process_task(uint64 taskLocation)
 	S3Task	   *task = (S3Task *) s3_queue_get_task(taskLocation);
 	char	   *objectname;
 
-	if (task->type == S3TaskTypeWriteFile ||
-		task->type == S3TaskTypeWritePGFile)
+	if (task->type == S3TaskTypeWriteFile)
 	{
 		char	   *filename = task->typeSpecific.writeFile.filename;
 		long		result;
@@ -317,6 +331,30 @@ s3process_task(uint64 taskLocation)
 
 		if ((result == S3_RESPONSE_OK) && task->typeSpecific.writeRootFile.delete)
 			unlink(filename);
+	}
+	else if (task->type == S3TaskTypeWritePGFile)
+	{
+		char	   *filename = task->typeSpecific.writePGFile.filename;
+		Pointer		data;
+		uint64		size;
+
+		if (filename[0] == '.' && filename[1] == '/')
+			filename += 2;
+
+		objectname = psprintf("data/%u/%s",
+							  task->typeSpecific.writePGFile.chkpNum,
+							  filename);
+
+		elog(DEBUG1, "S3 PG file put %s %s", objectname, filename);
+
+		data = s3_read_file(filename, &size);
+
+		if (data != NULL && check_pgdata_file_changed(filename, data, size))
+			(void) s3_put_object_with_contents(objectname, filename, false, false);
+
+		if (data != NULL)
+			pfree(data);
+		pfree(objectname);
 	}
 
 	pfree(task);
@@ -597,7 +635,7 @@ s3_schedule_root_file_write(char *filename, bool delete)
  * Schedule a synchronization of given PGDATA file to S3.
  */
 S3TaskLocation
-s3_schedule_pg_file_write(uint32 chkpNum, char *filename, bool delete)
+s3_schedule_pg_file_write(uint32 chkpNum, char *filename)
 {
 	S3Task	   *task;
 	int			filenameLen,
@@ -605,17 +643,16 @@ s3_schedule_pg_file_write(uint32 chkpNum, char *filename, bool delete)
 	S3TaskLocation location;
 
 	filenameLen = strlen(filename);
-	taskLen = INTALIGN(offsetof(S3Task, typeSpecific.writeFile.filename) + filenameLen + 1);
+	taskLen = INTALIGN(offsetof(S3Task, typeSpecific.writePGFile.filename) + filenameLen + 1);
 	task = (S3Task *) palloc0(taskLen);
 	task->type = S3TaskTypeWritePGFile;
-	task->typeSpecific.writeFile.chkpNum = chkpNum;
-	task->typeSpecific.writeFile.delete = delete;
-	memcpy(task->typeSpecific.writeFile.filename, filename, filenameLen + 1);
+	task->typeSpecific.writePGFile.chkpNum = chkpNum;
+	memcpy(task->typeSpecific.writePGFile.filename, filename, filenameLen + 1);
 
 	location = s3_queue_put_task((Pointer) task, taskLen);
 
-	elog(DEBUG1, "S3 schedule PGDATA file write: %s %u %u (%llu)",
-		 filename, chkpNum, delete ? 1 : 0, (unsigned long long) location);
+	elog(DEBUG1, "S3 schedule PGDATA file write: %s %u (%llu)",
+		 filename, chkpNum, (unsigned long long) location);
 
 	pfree(task);
 
@@ -682,6 +719,9 @@ s3worker_main(Datum main_arg)
 
 	ResetLatch(MyLatch);
 
+	workers_ctl[num].flushPgdataCrc = false;
+	workers_ctl[num].latch = MyLatch;
+
 
 	PG_TRY();
 	{
@@ -691,10 +731,10 @@ s3worker_main(Datum main_arg)
 		 * There might be task to process saved into shared memory.  If so,
 		 * pick and process it.
 		 */
-		if (workers_locations[num] != InvalidS3TaskLocation)
+		if (workers_ctl[num].location != InvalidS3TaskLocation)
 		{
-			s3process_task(workers_locations[num]);
-			workers_locations[num] = InvalidS3TaskLocation;
+			s3process_task(workers_ctl[num].location);
+			workers_ctl[num].location = InvalidS3TaskLocation;
 		}
 
 		while (true)
@@ -721,9 +761,9 @@ s3worker_main(Datum main_arg)
 			 */
 			while ((taskLocation = s3_queue_try_pick_task()) != InvalidS3TaskLocation)
 			{
-				workers_locations[num] = taskLocation;
+				workers_ctl[num].location = taskLocation;
 				s3process_task(taskLocation);
-				workers_locations[num] = InvalidS3TaskLocation;
+				workers_ctl[num].location = InvalidS3TaskLocation;
 			}
 
 			ResetLatch(MyLatch);
@@ -772,19 +812,15 @@ read_file_hash(StringInfo buf, char *file_name, uint64 *file_crc)
 static HTAB *
 init_pgdata_hash(void)
 {
-	FILE	   *crc_file;
-	StringInfoData buf;
+	Pointer		buf;
+	Pointer		ptr;
+	uint64		buf_size;
 	HASHCTL		ctl;
 	HTAB	   *hash;
 	
-	crc_file = AllocateFile(PGDATA_CRC_FILENAME, "r");
-	if (crc_file == NULL)
+	buf = s3_read_file(PGDATA_CRC_FILENAME, &buf_size);
+	if (buf == NULL)
 	{
-		if (errno != ENOENT)
-			ereport(FATAL,
-					(errcode_for_file_access(),
-					 errmsg("could not open file \"%s\": %m", PGDATA_CRC_FILENAME)));
-
 		/* In case of the file is missing just return NULL */
 		return NULL;
 	}
@@ -799,40 +835,73 @@ init_pgdata_hash(void)
 					   &ctl,
 					   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
-	initStringInfo(&buf);
-
-	while (!feof(crc_file) && !ferror(crc_file))
+	ptr = buf;
+	while ((ptr - buf) > buf_size)
 	{
-		while (pg_get_line_buf(crc_file, &buf))
-		{
-			char		file_name[MAXPGPATH];
-			uint64		file_crc;
-			uint64	   *entry;
-			bool		found;
+		char		filename[MAXPGPATH];
+		Size		len;
+		uint64		file_crc;
+		uint64	   *entry;
+		bool		found;
 
-			MemSet(file_name, 0, sizeof(file_name));
+		len = strlcpy(filename, ptr, sizeof(filename)) + 1 /* null byte */;
+		ptr += len;
 
-			/* Strip trailing newline */
-			buf.len = pg_strip_crlf(buf.data);
+		if (buf_size - (ptr - buf) < sizeof(file_crc) + 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("invalid hash file \"%s\"", PGDATA_CRC_FILENAME)));
 
-			if (!read_file_hash(&buf, file_name, &file_crc))
-				continue;
+		memcpy((char *) &file_crc, ptr, sizeof(file_crc));
+		ptr += sizeof(file_crc) + 1 /* null byte */;
 
-			entry = (uint64 *) hash_search(hash, file_name, HASH_ENTER, &found);
-			/* Normally we shouldn't have duplicate keys in the file */
-			if (found)
-				ereport(FATAL,
-						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-						 errmsg("the file name is duplicated in the hash file \"%s\": %s",
-								PGDATA_CRC_FILENAME, file_name)));
+		entry = (uint64 *) hash_search(hash, filename, HASH_ENTER, &found);
+		/* Normally we shouldn't have duplicated keys in the file */
+		if (found)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("the file name is duplicated in the hash file \"%s\": %s",
+							PGDATA_CRC_FILENAME, filename)));
 
-			*entry = file_crc;
-		}
+		*entry = file_crc;
 	}
 
-	FreeFile(crc_file);
-
 	return hash;
+}
+
+/*
+ * Save current workers' PGDATA files hash into a temporary file.
+ */
+static void
+flush_pgdata_hash(int num)
+{
+	char		filename[MAXPGPATH];
+	File		file;
+	int			rc;
+
+	Assert(pgdata_crc_buf != NULL);
+
+	snprintf(filename, sizeof(filename), "%s.%d", PGDATA_CRC_FILENAME, num);
+
+	file = PathNameOpenFile(filename, O_CREAT | O_RDWR | PG_BINARY);
+	if (file < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create file \"%s\": %m", filename)));
+
+	rc = FileWrite(file, pgdata_crc_buf->data, pgdata_crc_buf->len, 0, WAIT_EVENT_BUFFILE_WRITE);
+
+	if (rc < 0 || rc != pgdata_crc_buf->len)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write file \"%s\": %m", filename)));
+
+	if (FileSync(file, WAIT_EVENT_BUFFILE_WRITE) < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not sync file \"%s\": %m", filename)));
+
+	FileClose(file);
 }
 
 /*
@@ -844,13 +913,10 @@ init_pgdata_hash(void)
  * Returns false if the file didn't change.
  */
 static bool
-check_pgdata_file_changed(S3Task *task, Pointer new_data, uint64 size)
+check_pgdata_file_changed(const char *filename, Pointer new_data, uint64 size)
 {
-	char	   *file_name = task->typeSpecific.writeFile.filename;
 	uint64		prev_crc = 0;
 	uint64		cur_crc;
-
-	Assert(task->type == S3TaskTypeWritePGFile);
 
 	if (pgdata_hash == NULL)
 		pgdata_hash = init_pgdata_hash();
@@ -861,7 +927,7 @@ check_pgdata_file_changed(S3Task *task, Pointer new_data, uint64 size)
 		uint64	   *entry;
 
 		MemSet(key, 0, sizeof(key));
-		strncpy(key, file_name, MAXPGPATH);
+		strncpy(key, filename, MAXPGPATH);
 
 		entry = (uint64 *) hash_search(pgdata_hash, key, HASH_FIND, NULL);
 		if (entry != NULL)
@@ -873,7 +939,8 @@ check_pgdata_file_changed(S3Task *task, Pointer new_data, uint64 size)
 	if (pgdata_crc_buf == NULL)
 		pgdata_crc_buf = makeStringInfo();
 
-	appendStringInfo(pgdata_crc_buf, "%s:" UINT64_FORMAT, file_name, cur_crc);
+	appendBinaryStringInfo(pgdata_crc_buf, filename, strlen(filename));
+	appendBinaryStringInfo(pgdata_crc_buf, &cur_crc, sizeof(cur_crc));
 
 	return prev_crc != cur_crc;
 }

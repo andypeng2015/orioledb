@@ -575,8 +575,6 @@ s3_put_object_with_contents(char *objectname, Pointer data, uint64 dataSize,
 	curl_easy_cleanup(curl);
 
 	curl_slist_free_all(slist);
-	if (data)
-		pfree(data);
 	pfree(url);
 	pfree(datestring);
 	pfree(datetimestring);
@@ -596,11 +594,16 @@ s3_put_file(char *objectname, char *filename, bool ifNoneMatch)
 {
 	Pointer		data;
 	uint64		dataSize = 0;
+	long		res = -1;
 
 	data = s3_read_file(filename, &dataSize);
 	if (data)
-		return s3_put_object_with_contents(objectname, data, dataSize, ifNoneMatch);
-	return -1;
+	{
+		res = s3_put_object_with_contents(objectname, data, dataSize, ifNoneMatch);
+		pfree(data);
+	}
+
+	return res;
 }
 
 /*
@@ -629,14 +632,19 @@ s3_put_file_part(char *objectname, char *filename, int partnum)
 {
 	Pointer		data;
 	uint64		dataSize;
+	long		res = -1;
 
 	data = read_file_part(filename,
 						  partnum * ORIOLEDB_S3_PART_SIZE + ORIOLEDB_BLCKSZ,
 						  ORIOLEDB_S3_PART_SIZE,
 						  &dataSize);
 	if (data)
-		return s3_put_object_with_contents(objectname, data, dataSize, false);
-	return -1;
+	{
+		res = s3_put_object_with_contents(objectname, data, dataSize, false);
+		pfree(data);
+	}
+
+	return res;
 }
 
 /*
