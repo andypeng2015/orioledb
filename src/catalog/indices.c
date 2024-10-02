@@ -1269,7 +1269,6 @@ scan_getnextslot_allattrs(BTreeSeqScan *scan, OTableDescr *descr,
 {
 	OTuple		tup;
 	BTreeLocationHint hint;
-	OSnapshot	temp_o_snapshot;
 	OSnapshot	tuple_o_snapshot;
 
 	tup = btree_seq_scan_getnext(scan, slot->tts_mcxt, &tuple_o_snapshot, &hint);
@@ -1277,9 +1276,8 @@ scan_getnextslot_allattrs(BTreeSeqScan *scan, OTableDescr *descr,
 	if (O_TUPLE_IS_NULL(tup))
 		return false;
 
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
-	tts_orioledb_store_tuple(slot, tup, descr, &temp_o_snapshot, PrimaryIndexNumber,
-							 true, &hint);
+	tts_orioledb_store_tuple(slot, tup, descr, &o_in_progress_snapshot,
+							 PrimaryIndexNumber, true, &hint);
 	slot_getallattrs(slot);
 	(*ntuples)++;
 	return true;

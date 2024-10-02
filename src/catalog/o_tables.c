@@ -1004,33 +1004,29 @@ void
 o_tables_drop_all(OXid oxid, OSnapshot *o_snapshot, Oid database_id)
 {
 	OTablesDropAllArg arg;
-	OSnapshot	temp_o_snapshot;
 
 	arg.oxid = oxid;
 	arg.o_snapshot = *o_snapshot;
 	arg.datoid = database_id;
 
-	temp_o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 	o_tables_foreach_oids(o_tables_drop_all_callback,
-						  &temp_o_snapshot, &arg);
+						  &o_non_deleted_snapshot, &arg);
 }
 
 void
-o_tables_drop_all_temporary()
+o_tables_drop_all_temporary(void)
 {
 	OTablesDropAllArg arg;
 	OSnapshot	o_snapshot;
 	OXid		oxid;
-	OSnapshot	temp_o_snapshot;
 
 	fill_current_oxid_osnapshot(&oxid, &o_snapshot);
 
 	arg.oxid = oxid;
 	arg.o_snapshot = o_snapshot;
 
-	temp_o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 	o_tables_foreach(o_tables_drop_all_temporary_callback,
-					 &temp_o_snapshot, &arg);
+					 &o_non_deleted_snapshot, &arg);
 }
 
 bool
@@ -1078,7 +1074,6 @@ o_tables_get_by_oids_and_version(ORelOids oids, uint32 *version)
 	Pointer		result;
 	Size		dataLength;
 	OTable	   *oTable;
-	OSnapshot	temp_o_snapshot;
 
 	key.oids = oids;
 	key.chunknum = 0;
@@ -1088,10 +1083,9 @@ o_tables_get_by_oids_and_version(ORelOids oids, uint32 *version)
 		key.version = O_TABLE_INVALID_VERSION;
 
 	found_key = &key;
-	temp_o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 	result = generic_toast_get_any_with_key(&oTablesToastAPI, (Pointer) &key,
 											&dataLength,
-											&temp_o_snapshot,
+											&o_non_deleted_snapshot,
 											get_sys_tree(SYS_TREES_O_TABLES),
 											(Pointer *) &found_key);
 
@@ -1123,11 +1117,10 @@ o_tables_get_by_tree(ORelOids oids, OIndexType type)
 {
 	ORelOids	tableOids;
 	bool		result;
-	OSnapshot	temp_o_snapshot;
 
 	/* See if it's index oid first */
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
-	result = o_indices_find_table_oids(oids, type, &temp_o_snapshot, &tableOids);
+	result = o_indices_find_table_oids(oids, type,
+									   &o_in_progress_snapshot, &tableOids);
 	if (!result)
 		return NULL;
 
@@ -1417,7 +1410,6 @@ orioledb_table_oids(PG_FUNCTION_ARGS)
 	Tuplestorestate *tupstore;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
-	OSnapshot	o_snapshot;
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -1433,8 +1425,8 @@ orioledb_table_oids(PG_FUNCTION_ARGS)
 
 	MemoryContextSwitchTo(oldcontext);
 
-	o_snapshot.csn = COMMITSEQNO_NON_DELETED;
-	o_tables_foreach_oids(o_table_oids_array_callback, &o_snapshot, rsinfo);
+	o_tables_foreach_oids(o_table_oids_array_callback,
+						  &o_non_deleted_snapshot, rsinfo);
 
 	tuplestore_donestoring(tupstore);
 
@@ -1819,7 +1811,6 @@ o_tables_drop_columns_by_type(OXid oxid, OSnapshot *o_snapshot, Oid type_oid)
 {
 	OTablesDropAllWithTypeArg arg;
 	HeapTuple	tuple;
-	OSnapshot	temp_o_snapshot;
 
 	tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(type_oid));
 	Assert(HeapTupleIsValid(tuple));
@@ -1830,9 +1821,8 @@ o_tables_drop_columns_by_type(OXid oxid, OSnapshot *o_snapshot, Oid type_oid)
 	arg.type_oid = type_oid;
 	arg.type_data = (Form_pg_type) GETSTRUCT(tuple);
 
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	o_tables_foreach(o_tables_drop_columns_with_type_callback,
-					 &temp_o_snapshot, &arg);
+					 &o_in_progress_snapshot, &arg);
 }
 
 void

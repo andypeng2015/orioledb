@@ -49,6 +49,16 @@ typedef struct OSnapshot
 	XLogRecPtr	xmin;
 } OSnapshot;
 
+extern OSnapshot o_in_progress_snapshot;
+extern OSnapshot o_non_deleted_snapshot;
+
+#define O_LOAD_SNAPSHOT(o_snapshot, snapshot) \
+	do { \
+		(o_snapshot)->xmin = (snapshot)->csnSnapshotData.xmin; \
+		(o_snapshot)->csn = (snapshot)->csnSnapshotData.snapshotcsn; \
+		(o_snapshot)->xlogptr = (snapshot)->csnSnapshotData.xlogptr; \
+	} while (false)
+
 extern Size oxid_shmem_needs(void);
 extern void oxid_init_shmem(Pointer ptr, bool found);
 extern bool wait_for_oxid(OXid oxid);

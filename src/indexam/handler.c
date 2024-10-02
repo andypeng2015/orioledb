@@ -1397,11 +1397,11 @@ orioledb_amgettuple(IndexScanDesc scan, ScanDirection dir)
 	o_scan->scanDir = dir;
 
 	if (scan->xs_snapshot->snapshot_type == SNAPSHOT_DIRTY)
-		o_scan->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_scan->o_snapshot = o_in_progress_snapshot;
 	else if (scan->xs_snapshot->snapshot_type == SNAPSHOT_NON_VACUUMABLE)
-		o_scan->o_snapshot.csn = COMMITSEQNO_NON_DELETED;
+		o_scan->o_snapshot = o_non_deleted_snapshot;
 	else
-		o_scan->o_snapshot.csn = scan->xs_snapshot->csnSnapshotData.snapshotcsn;
+		O_LOAD_SNAPSHOT(&o_scan->o_snapshot, scan->xs_snapshot);
 
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;

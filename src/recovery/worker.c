@@ -491,10 +491,8 @@ apply_modify_record(OTableDescr *descr, OIndexDescr *id, uint16 type,
 					OTuple p)
 {
 	OXid		oxid;
-	OSnapshot	o_snapshot;
 
 	oxid = get_current_oxid();
-	o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 
 	/*
 	 * Don't apply changes to secondary indices before TOAST is consisntent.
@@ -504,12 +502,12 @@ apply_modify_record(OTableDescr *descr, OIndexDescr *id, uint16 type,
 	if (descr && toast_consistent)
 	{
 		/* Modify table */
-		apply_tbl_modify_record(descr, type, p, oxid, &o_snapshot);
+		apply_tbl_modify_record(descr, type, p, oxid, &o_in_progress_snapshot);
 	}
 	else
 	{
 		o_btree_load_shmem(&id->desc);
-		apply_btree_modify_record(&id->desc, type, p, oxid, &o_snapshot);
+		apply_btree_modify_record(&id->desc, type, p, oxid, &o_in_progress_snapshot);
 	}
 }
 

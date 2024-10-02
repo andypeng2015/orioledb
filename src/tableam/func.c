@@ -1101,7 +1101,6 @@ orioledb_tbl_are_indices_equal(PG_FUNCTION_ARGS)
 			   *iter2;
 	OIndexNumber ix_num1,
 				ix_num2;
-	OSnapshot	o_snapshot;
 
 	orioledb_check_shmem();
 
@@ -1136,13 +1135,14 @@ orioledb_tbl_are_indices_equal(PG_FUNCTION_ARGS)
 			td2->leafTupdesc->attrs[i].atttypid;
 	}
 
-	o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	if (are_equal)
 	{
 		iter1 = o_btree_iterator_create(&td1->desc, NULL, BTreeKeyNone,
-										&o_snapshot, ForwardScanDirection);
+										&o_in_progress_snapshot,
+										ForwardScanDirection);
 		iter2 = o_btree_iterator_create(&td2->desc, NULL, BTreeKeyNone,
-										&o_snapshot, ForwardScanDirection);
+										&o_in_progress_snapshot,
+										ForwardScanDirection);
 		while (are_equal)
 		{
 			OTuple		tuple1,

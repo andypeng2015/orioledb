@@ -279,7 +279,6 @@ orioledb_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 	OBTreeKeyBound pkey;
 	OTableDescr *descr;
 	OTuple		tuple;
-	OSnapshot	temp_o_snapshot;
 	OSnapshot	tuple_o_snapshot;
 	BTreeLocationHint hint = {OInvalidInMemoryBlkno, 0};
 
@@ -294,11 +293,11 @@ orioledb_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 
 	tts_orioledb_fill_key_bound(slot, GET_PRIMARY(descr), &pkey);
 
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	tuple = o_btree_find_tuple_by_key(&GET_PRIMARY(descr)->desc,
 									  (Pointer) &pkey,
 									  BTreeKeyBound,
-									  &temp_o_snapshot, &tuple_o_snapshot,
+									  &o_in_progress_snapshot,
+									  &tuple_o_snapshot,
 									  slot->tts_mcxt,
 									  &hint);
 
@@ -419,9 +418,9 @@ orioledb_tuple_delete(Relation relation, Datum tupleid, CommandId cid,
 	OSnapshot	o_snapshot;
 
 	if (snapshot)
-		o_snapshot.csn = snapshot->csnSnapshotData.snapshotcsn;
+		O_LOAD_SNAPSHOT(&o_snapshot, snapshot);
 	else
-		o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_snapshot = o_in_progress_snapshot;
 
 	descr = relation_get_descr(relation);
 
@@ -510,9 +509,9 @@ orioledb_tuple_update(Relation relation, Datum tupleid, TupleTableSlot *slot,
 	OSnapshot	o_snapshot;
 
 	if (snapshot)
-		o_snapshot.csn = snapshot->csnSnapshotData.snapshotcsn;
+		O_LOAD_SNAPSHOT(&o_snapshot, snapshot);
 	else
-		o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		o_snapshot = o_in_progress_snapshot;
 
 	descr = relation_get_descr(relation);
 
@@ -1191,9 +1190,9 @@ orioledb_beginscan(Relation relation, Snapshot snapshot,
 	}
 
 	if (scan->rs_base.rs_flags & SO_TYPE_ANALYZE)
-		scan->o_snapshot.csn = COMMITSEQNO_INPROGRESS;
+		scan->o_snapshot = o_in_progress_snapshot;
 	else
-		scan->o_snapshot.csn = snapshot->csnSnapshotData.snapshotcsn;
+		O_LOAD_SNAPSHOT(&scan->o_snapshot, snapshot);
 
 	ItemPointerSetBlockNumber(&scan->iptr, 0);
 	ItemPointerSetOffsetNumber(&scan->iptr, FirstOffsetNumber);
@@ -1370,7 +1369,6 @@ orioledb_acquire_sample_rows(Relation relation, int elevel,
 	double		rowstoskip = -1;	/* -1 means not set yet */
 	BlockSamplerData bs;
 	BlockNumber totalblocks = TREE_NUM_LEAF_PAGES(&pk->desc);
-	OSnapshot	temp_o_snapshot;
 
 	nblocks = BlockSampler_Init(&bs, totalblocks,
 								targrows, random());
@@ -1386,7 +1384,6 @@ orioledb_acquire_sample_rows(Relation relation, int elevel,
 
 	tuple = btree_seq_scan_getnext_raw(scan, CurrentMemoryContext,
 									   &scanEnd, NULL);
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	while (!scanEnd)
 	{
 		tuple = btree_seq_scan_getnext_raw(scan, CurrentMemoryContext,
@@ -1394,7 +1391,7 @@ orioledb_acquire_sample_rows(Relation relation, int elevel,
 
 		if (!O_TUPLE_IS_NULL(tuple))
 		{
-			tts_orioledb_store_tuple(slot, tuple, descr, &temp_o_snapshot,
+			tts_orioledb_store_tuple(slot, tuple, descr, &o_in_progress_snapshot,
 									 PrimaryIndexNumber, false, NULL);
 
 			liverows += 1;

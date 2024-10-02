@@ -2674,8 +2674,6 @@ replay_container(Pointer startPtr, Pointer endPtr,
 
 			if (sys_tree_num > 0 && xlogRecPtr >= checkpoint_state->sysTreesStartPtr)
 			{
-				OSnapshot	o_snapshot;
-
 				Assert(sys_tree_supports_transactions(sys_tree_num));
 				recovery_switch_to_oxid(oxid, -1);
 
@@ -2686,10 +2684,9 @@ replay_container(Pointer startPtr, Pointer endPtr,
 				if (!single)
 					workers_synchronize(xlogPtr, true);
 
-				o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 				success = apply_sys_tree_modify_record(sys_tree_num, type,
 													   tuple.tuple, oxid,
-													   &o_snapshot);
+													   &o_in_progress_snapshot);
 
 				if (sys_tree_num == SYS_TREES_O_INDICES && success)
 				{

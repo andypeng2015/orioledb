@@ -1352,19 +1352,17 @@ o_btree_autonomous_insert(BTreeDescr *desc, OTuple tuple)
 {
 	OAutonomousTxState state;
 	OBTreeModifyResult result;
-	OSnapshot	temp_o_snapshot;
 
 	if (desc->storageType == BTreeStoragePersistence)
 	{
 		start_autonomous_transaction(&state);
 		PG_TRY();
 		{
-			temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 			result = o_btree_normal_modify(desc, BTreeOperationInsert,
 										   tuple, BTreeKeyLeafTuple,
 										   NULL, BTreeKeyNone,
 										   get_current_oxid(),
-										   &temp_o_snapshot,
+										   &o_in_progress_snapshot,
 										   RowLockUpdate,
 										   NULL, BTreeLeafTupleNonDeleted,
 										   &nullCallbackInfo);
@@ -1380,12 +1378,11 @@ o_btree_autonomous_insert(BTreeDescr *desc, OTuple tuple)
 	}
 	else
 	{
-		temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 		result = o_btree_normal_modify(desc, BTreeOperationInsert,
 									   tuple, BTreeKeyLeafTuple,
 									   NULL, BTreeKeyNone,
 									   InvalidOXid,
-									   &temp_o_snapshot,
+									   &o_in_progress_snapshot,
 									   RowLockUpdate,
 									   NULL, BTreeLeafTupleNonDeleted,
 									   &nullCallbackInfo);
@@ -1400,7 +1397,6 @@ o_btree_autonomous_delete(BTreeDescr *desc, OTuple key, BTreeKeyType keyType,
 {
 	OAutonomousTxState state;
 	OBTreeModifyResult result;
-	OSnapshot	temp_o_snapshot;
 
 	Assert(keyType == BTreeKeyLeafTuple || keyType == BTreeKeyNonLeafKey);
 
@@ -1409,11 +1405,11 @@ o_btree_autonomous_delete(BTreeDescr *desc, OTuple key, BTreeKeyType keyType,
 		start_autonomous_transaction(&state);
 		PG_TRY();
 		{
-			temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 			result = o_btree_normal_modify(desc, BTreeOperationDelete,
 										   key, keyType,
 										   NULL, BTreeKeyNone,
-										   get_current_oxid(), &temp_o_snapshot,
+										   get_current_oxid(),
+										   &o_in_progress_snapshot,
 										   RowLockUpdate,
 										   hint, BTreeLeafTupleNonDeleted,
 										   &nullCallbackInfo);
@@ -1432,11 +1428,11 @@ o_btree_autonomous_delete(BTreeDescr *desc, OTuple key, BTreeKeyType keyType,
 	}
 	else
 	{
-		temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 		result = o_btree_normal_modify(desc, BTreeOperationDelete,
 									   key, keyType,
 									   NULL, BTreeKeyNone,
-									   InvalidOXid, &temp_o_snapshot,
+									   InvalidOXid,
+									   &o_in_progress_snapshot,
 									   RowLockUpdate,
 									   hint, BTreeLeafTupleNonDeleted,
 									   &nullCallbackInfo);

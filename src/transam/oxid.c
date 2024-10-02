@@ -72,6 +72,9 @@ XidMeta    *xid_meta;
 
 pg_atomic_uint32 *logicalXidsShmemMap;
 
+OSnapshot	o_in_progress_snapshot = {COMMITSEQNO_INPROGRESS, InvalidXLogRecPtr, 0};
+OSnapshot	o_non_deleted_snapshot = {COMMITSEQNO_NON_DELETED, InvalidXLogRecPtr, 0};
+
 static OBuffersDesc buffersDesc = {
 	.singleFileSize = XID_FILE_SIZE,
 	.filenameTemplate = ORIOLEDB_DATA_DIR "/%02X%08X.xidmap",

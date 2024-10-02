@@ -983,15 +983,13 @@ o_indices_get(ORelOids oids, OIndexType type)
 	Size		dataLength;
 	Pointer		result;
 	OIndex	   *oIndex;
-	OSnapshot	temp_o_snapshot;
 
 	key.type = type;
 	key.oids = oids;
 	key.chunknum = 0;
 
-	temp_o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 	result = generic_toast_get_any(&oIndicesToastAPI, (Pointer) &key,
-								   &dataLength, &temp_o_snapshot,
+								   &dataLength, &o_non_deleted_snapshot,
 								   get_sys_tree(SYS_TREES_O_INDICES));
 
 	if (result == NULL)
@@ -1066,15 +1064,14 @@ o_indices_foreach_oids(OIndexOidsCallback callback, void *arg)
 	BTreeIterator *it;
 	OTuple		tuple;
 	BTreeDescr *desc = get_sys_tree(SYS_TREES_O_INDICES);
-	OSnapshot	o_snapshot;
 
 	chunkKey.type = type;
 	chunkKey.oids = oids;
 	chunkKey.chunknum = 0;
 
-	o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 	it = o_btree_iterator_create(desc, (Pointer) &chunkKey, BTreeKeyBound,
-								 &o_snapshot, ForwardScanDirection);
+								 &o_non_deleted_snapshot,
+								 ForwardScanDirection);
 
 	tuple = o_btree_iterator_fetch(it, NULL, NULL,
 								   BTreeKeyNone, false, NULL);
@@ -1105,9 +1102,9 @@ o_indices_foreach_oids(OIndexOidsCallback callback, void *arg)
 		chunkKey.type = type;
 		chunkKey.chunknum = 0;
 
-		o_snapshot.csn = COMMITSEQNO_NON_DELETED;
 		it = o_btree_iterator_create(desc, (Pointer) &chunkKey, BTreeKeyBound,
-									 &o_snapshot, ForwardScanDirection);
+									 &o_non_deleted_snapshot,
+									 ForwardScanDirection);
 		tuple = o_btree_iterator_fetch(it, NULL, NULL,
 									   BTreeKeyNone, false, NULL);
 	}
@@ -1337,7 +1334,6 @@ orioledb_index_rows(PG_FUNCTION_ARGS)
 	TupleDesc	tupleDesc;
 	Datum		values[2];
 	bool		nulls[2];
-	OSnapshot	o_snapshot;
 
 	idx = index_open(ix_reloid, AccessShareLock);
 	tbl = table_open(idx->rd_index->indrelid, AccessShareLock);
@@ -1358,9 +1354,8 @@ orioledb_index_rows(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &tupleDesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 
-	o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	it = o_btree_iterator_create(td, NULL, BTreeKeyNone,
-								 &o_snapshot, ForwardScanDirection);
+								 &o_in_progress_snapshot, ForwardScanDirection);
 
 	do
 	{

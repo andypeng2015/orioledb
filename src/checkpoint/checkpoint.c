@@ -951,7 +951,6 @@ o_get_latest_chkp_num(Oid datoid, Oid relnode, uint32 max_chkp_num,
 	SharedRootInfoKey key;
 	uint32		chkp_num;
 	ChkpNumTuple *result;
-	OSnapshot	temp_o_snapshot;
 
 	if (datoid == SYS_TREES_DATOID)
 	{
@@ -964,10 +963,9 @@ o_get_latest_chkp_num(Oid datoid, Oid relnode, uint32 max_chkp_num,
 	key.relnode = relnode;
 	key_tuple.data = (Pointer) &key;
 
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	result_tuple = o_btree_find_tuple_by_key(get_sys_tree(SYS_TREES_CHKP_NUM),
 											 &key_tuple, BTreeKeyNonLeafKey,
-											 &temp_o_snapshot, NULL,
+											 &o_in_progress_snapshot, NULL,
 											 CurrentMemoryContext, NULL);
 
 	if (O_TUPLE_IS_NULL(result_tuple))
@@ -1010,16 +1008,14 @@ o_update_latest_chkp_num(Oid datoid, Oid relnode, uint32 chkp_num)
 	};
 	BTreeDescr *desc = get_sys_tree(SYS_TREES_CHKP_NUM);
 	OBTreeModifyResult result PG_USED_FOR_ASSERTS_ONLY;
-	OSnapshot	temp_o_snapshot;
 
 	key.datoid = datoid;
 	key.relnode = relnode;
 	key_tuple.data = (Pointer) &key;
 
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	tuple = o_btree_find_tuple_by_key(desc,
 									  &key_tuple, BTreeKeyNonLeafKey,
-									  &temp_o_snapshot, NULL,
+									  &o_in_progress_snapshot, NULL,
 									  CurrentMemoryContext, NULL);
 	if (O_TUPLE_IS_NULL(tuple))
 	{
@@ -1042,13 +1038,12 @@ o_update_latest_chkp_num(Oid datoid, Oid relnode, uint32 chkp_num)
 	newTuple.formatFlags = 0;
 	newTuple.data = (Pointer) &data;
 
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	result = o_btree_modify(desc,
 							O_TUPLE_IS_NULL(tuple) ? BTreeOperationInsert : BTreeOperationUpdate,
 							newTuple, BTreeKeyLeafTuple,
 							(Pointer) &key_tuple, BTreeKeyNonLeafKey,
 							InvalidOXid,
-							&temp_o_snapshot,
+							&o_in_progress_snapshot,
 							RowLockUpdate,
 							NULL,
 							&callbackInfo);
@@ -1070,20 +1065,18 @@ o_delete_chkp_num(Oid datoid, Oid relnode)
 		.needsUndoForSelfCreated = false,
 		.arg = NULL
 	};
-	OSnapshot	temp_o_snapshot;
 
 	key.datoid = datoid;
 	key.relnode = relnode;
 	key_tuple.data = (Pointer) &key;
 	key_tuple.formatFlags = 0;
 
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	(void) o_btree_modify(get_sys_tree(SYS_TREES_CHKP_NUM),
 						  BTreeOperationDelete,
 						  key_tuple, BTreeKeyNonLeafKey,
 						  (Pointer) NULL, BTreeKeyNone,
 						  InvalidOXid,
-						  &temp_o_snapshot,
+						  &o_in_progress_snapshot,
 						  RowLockUpdate,
 						  NULL,
 						  &nullCallbackInfo);
@@ -4608,7 +4601,6 @@ check_tree_needs_checkpointing(OIndexType type, ORelOids treeOids)
 	OTuple		keyTuple;
 	OTuple		resultTuple;
 	int			lockNo;
-	OSnapshot	temp_o_snapshot;
 
 	if (!skip_unmodified_trees)
 		return true;
@@ -4626,18 +4618,16 @@ check_tree_needs_checkpointing(OIndexType type, ORelOids treeOids)
 
 	keyTuple.formatFlags = 0;
 	keyTuple.data = (Pointer) &key;
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	resultTuple = o_btree_find_tuple_by_key(get_sys_tree(SYS_TREES_EVICTED_DATA),
 											&keyTuple, BTreeKeyNonLeafKey,
-											&temp_o_snapshot, NULL,
+											&o_in_progress_snapshot, NULL,
 											CurrentMemoryContext, NULL);
 
 	if (O_TUPLE_IS_NULL(resultTuple))
 	{
-		temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 		resultTuple = o_btree_find_tuple_by_key(get_sys_tree(SYS_TREES_SHARED_ROOT_INFO),
 												&keyTuple, BTreeKeyNonLeafKey,
-												&temp_o_snapshot, NULL,
+												&o_in_progress_snapshot, NULL,
 												CurrentMemoryContext, NULL);
 		if (O_TUPLE_IS_NULL(resultTuple))
 		{
@@ -5148,17 +5138,15 @@ tbl_data_exists(ORelOids *oids)
 	SharedRootInfoKey key;
 	OTuple		keyTuple;
 	OTuple		resultTuple;
-	OSnapshot	temp_o_snapshot;
 
 	key.datoid = oids->datoid;
 	key.relnode = oids->relnode;
 	keyTuple.formatFlags = 0;
 	keyTuple.data = (Pointer) &key;
 
-	temp_o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	resultTuple = o_btree_find_tuple_by_key(get_sys_tree(SYS_TREES_SHARED_ROOT_INFO),
 											&keyTuple, BTreeKeyNonLeafKey,
-											&temp_o_snapshot, NULL,
+											&o_in_progress_snapshot, NULL,
 											CurrentMemoryContext, NULL);
 	if (!O_TUPLE_IS_NULL(resultTuple))
 	{

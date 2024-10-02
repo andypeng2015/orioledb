@@ -554,7 +554,6 @@ orioledb_sys_tree_rows(PG_FUNCTION_ARGS)
 	Datum		values[1];
 	bool		nulls[1] = {false};
 	Oid			funcrettype;
-	OSnapshot	o_snapshot;
 
 	check_tree_num_input(num);
 	orioledb_check_shmem();
@@ -579,9 +578,8 @@ orioledb_sys_tree_rows(PG_FUNCTION_ARGS)
 	td = get_sys_tree(num);
 	o_btree_load_shmem(get_sys_tree(num));
 
-	o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	it = o_btree_iterator_create(td, NULL, BTreeKeyNone,
-								 &o_snapshot, ForwardScanDirection);
+								 &o_in_progress_snapshot, ForwardScanDirection);
 
 	do
 	{

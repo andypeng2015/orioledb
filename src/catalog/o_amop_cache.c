@@ -227,14 +227,12 @@ o_amop_cache_search_htup_list(TupleDesc tupdesc, Oid amopopr)
 	BTreeIterator *it;
 	OSysCacheKey3 key = {0};
 	OSysCacheBound bound = {.key = (OSysCacheKey *) &key,.nkeys = 1};
-	OSnapshot	o_snapshot;
 
 	o_sys_cache_set_datoid_lsn(&key.common.lsn, &key.common.datoid);
 	key.keys[0] = ObjectIdGetDatum(amopopr);
 
-	o_snapshot.csn = COMMITSEQNO_INPROGRESS;
 	it = o_btree_iterator_create(td, (Pointer) &bound, BTreeKeyBound,
-								 &o_snapshot, ForwardScanDirection);
+								 &o_in_progress_snapshot, ForwardScanDirection);
 
 	do
 	{
