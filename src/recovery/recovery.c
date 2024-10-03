@@ -2480,8 +2480,8 @@ replay_container(Pointer startPtr, Pointer endPtr,
 			memcpy(&oxid, ptr, sizeof(oxid));
 			ptr += sizeof(oxid);
 
-			/* don't need logicalXid and logicalNextXid here */
-			ptr += 2 * sizeof(TransactionId);
+			/* don't need logicalXid here */
+			ptr += sizeof(TransactionId);
 
 			advance_oxids(oxid);
 			recovery_switch_to_oxid(oxid, -1);

@@ -222,7 +222,6 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	ORelOids	cur_oids = {0, 0, 0};
 	OXid		oxid = InvalidOXid;
 	TransactionId logicalXid = InvalidTransactionId;
-	TransactionId logicalNextXid = InvalidTransactionId;
 	uint8		rec_type;
 	OffsetNumber length;
 	OIndexType	ix_type = oIndexInvalid;
@@ -254,9 +253,6 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			ptr += sizeof(oxid);
 
 			memcpy(&logicalXid, ptr, sizeof(TransactionId));
-			ptr += sizeof(TransactionId);
-
-			memcpy(&logicalNextXid, ptr, sizeof(TransactionId));
 			ptr += sizeof(TransactionId);
 		}
 		else if (rec_type == WAL_REC_COMMIT || rec_type == WAL_REC_ROLLBACK)
@@ -293,15 +289,23 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 			}
 
-			ReorderBufferCommit(ctx->reorder, logicalXid,
-								buf->origptr, buf->endptr,
-								0, XLogRecGetOrigin(buf->record),
-								buf->origptr + (ptr - startPtr));
+			if (rec_type == WAL_REC_COMMIT &&
+				!SnapBuildXactNeedsSkip(ctx->snapshot_builder, buf->endptr))
+			{
+				ReorderBufferCommit(ctx->reorder, logicalXid,
+									buf->origptr, buf->endptr,
+									0, XLogRecGetOrigin(buf->record),
+									buf->origptr + (ptr - startPtr));
+			}
+			else
+			{
+				ReorderBufferAbort(ctx->reorder, logicalXid,
+								   buf->origptr, 0);
+			}
 			UpdateDecodingStats(ctx);
 
 			oxid = InvalidOXid;
 			logicalXid = InvalidTransactionId;
-			logicalNextXid = InvalidTransactionId;
 		}
 		else if (rec_type == WAL_REC_JOINT_COMMIT)
 		{
@@ -323,15 +327,22 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 			SnapBuildUpdateCSNSnaphot(ctx->snapshot_builder, &csnSnapshot);
 
-			ReorderBufferCommit(ctx->reorder, logicalXid,
-								buf->origptr, buf->endptr,
-								0, XLogRecGetOrigin(buf->record),
-								buf->origptr + (ptr - startPtr));
+			if (!SnapBuildXactNeedsSkip(ctx->snapshot_builder, buf->endptr))
+			{
+				ReorderBufferCommit(ctx->reorder, logicalXid,
+									buf->origptr, buf->endptr,
+									0, XLogRecGetOrigin(buf->record),
+									buf->origptr + (ptr - startPtr));
+			}
+			else
+			{
+				ReorderBufferAbort(ctx->reorder, logicalXid,
+								   buf->origptr, 0);
+			}
 			UpdateDecodingStats(ctx);
 
 			oxid = InvalidOXid;
 			logicalXid = InvalidTransactionId;
-			logicalNextXid = InvalidTransactionId;
 		}
 		else if (rec_type == WAL_REC_RELATION)
 		{
@@ -465,13 +476,6 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			ptr += sizeof(OffsetNumber);
 
 			if (SnapBuildCurrentState(ctx->snapshot_builder) < SNAPBUILD_FULL_SNAPSHOT)
-			{
-				ptr += length;
-				continue;
-			}
-
-			if (SnapBuildCurrentState(ctx->snapshot_builder) < SNAPBUILD_CONSISTENT &&
-				TransactionIdPrecedes(logicalNextXid, SnapBuildNextPhaseAt(ctx->snapshot_builder)))
 			{
 				ptr += length;
 				continue;
