@@ -498,7 +498,6 @@ orioledb_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 											 buf->origptr + (ptr - startPtr),
 											 snap);
 				snap->active_count++;
-				snap->csnSnapshotData.xlogptr = record->ReadRecPtr;
 			}
 
 
