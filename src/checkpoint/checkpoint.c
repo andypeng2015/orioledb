@@ -2995,11 +2995,11 @@ checkpoint_try_merge_page(BTreeDescr *descr, CheckpointState *state,
 							  blkno, loc, rightBlkno, true))
 	{
 		if (descr->undoType != UndoLogNone)
+		{
 			release_undo_size(descr->undoType);
-		free_retained_undo_location(descr->undoType);
-
-		if (descr->undoType != UndoLogNone)
+			free_retained_undo_location(descr->undoType);
 			reserve_undo_size(descr->undoType, 2 * O_MERGE_UNDO_IMAGE_SIZE);
+		}
 		return true;
 	}
 	else
