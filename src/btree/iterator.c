@@ -330,7 +330,7 @@ o_find_tuple_version(BTreeDescr *desc, Page p, BTreePageItemLocator *loc,
 			}
 			else
 			{
-				if (tupptr < oSnapshot->xlogptr)
+				if (tupptr <= oSnapshot->xlogptr)
 					break;
 			}
 		}
