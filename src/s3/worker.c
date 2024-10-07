@@ -62,6 +62,12 @@ static ConditionVariable		workers_flushed_cv;
 static HTAB		   *pgdata_hash = NULL;
 static StringInfo	pgdata_crc_buf = NULL;
 
+typedef struct PGDataHashEntry
+{
+	char		filename[MAXPGPATH];
+	uint64		crc;
+} PGDataHashEntry;
+
 static HTAB *init_pgdata_hash(void);
 static void flush_pgdata_hash(int num);
 static bool check_pgdata_file_changed(const char *filename, Pointer new_data,
@@ -128,6 +134,8 @@ register_s3worker(int num)
 void
 s3_worker_flush(int num)
 {
+	Assert(workers_ctl[num].latch != NULL);
+
 	pg_atomic_test_set_flag(&workers_ctl[num].flushPgdataHash);
 	SetLatch(workers_ctl[num].latch);
 }
@@ -161,7 +169,8 @@ s3_workers_wait_for_flush(void)
 /*
  * Compact all S3 workers PGDATA hash files into one file.
  */
-void s3_workers_compact_hash(void)
+void
+s3_workers_compact_hash(void)
 {
 	int			file;
 
@@ -927,7 +936,7 @@ init_pgdata_hash(void)
 	
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = MAXPGPATH;
-	ctl.entrysize = sizeof(uint64);
+	ctl.entrysize = sizeof(PGDataHashEntry);
 	ctl.hcxt = CurTransactionContext;
 
 	hash = hash_create("pgdata hash",
@@ -937,9 +946,14 @@ init_pgdata_hash(void)
 
 	file = BasicOpenFile(PGDATA_CRC_FILENAME, O_RDONLY | PG_BINARY);
 	if (file < 0)
+	{
+		if (errno == ENOENT)
+			return NULL;
+
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not read file \"%s\": %m", PGDATA_CRC_FILENAME)));
+	}
 
 	initStringInfo(&buf);
 
@@ -947,7 +961,7 @@ init_pgdata_hash(void)
 	{
 		const char *filename;
 		uint64		file_crc;
-		uint64	   *entry;
+		PGDataHashEntry *entry;
 		bool		found;
 
 		resetStringInfo(&buf);
@@ -961,7 +975,7 @@ init_pgdata_hash(void)
 		filename = pq_getmsgrawstring(&buf);
 		pq_copymsgbytes(&buf, (char *) &file_crc, sizeof(file_crc));
 
-		entry = (uint64 *) hash_search(hash, filename, HASH_ENTER, &found);
+		entry = (PGDataHashEntry *) hash_search(hash, filename, HASH_ENTER, &found);
 		/* Normally we shouldn't have duplicated keys in the file */
 		if (found)
 			ereport(ERROR,
@@ -969,7 +983,7 @@ init_pgdata_hash(void)
 					 errmsg("the file name is duplicated in the hash file \"%s\": %s",
 							PGDATA_CRC_FILENAME, filename)));
 
-		*entry = file_crc;
+		entry->crc = file_crc;
 	}
 
 	if (readBytes < 0)
@@ -1044,14 +1058,14 @@ check_pgdata_file_changed(const char *filename, Pointer new_data, uint64 size)
 	if (pgdata_hash != NULL)
 	{
 		char		key[MAXPGPATH];
-		uint64	   *entry;
+		PGDataHashEntry *entry;
 
 		MemSet(key, 0, sizeof(key));
 		strncpy(key, filename, MAXPGPATH);
 
-		entry = (uint64 *) hash_search(pgdata_hash, key, HASH_FIND, NULL);
+		entry = (PGDataHashEntry *) hash_search(pgdata_hash, key, HASH_FIND, NULL);
 		if (entry != NULL)
-			prev_crc = *entry;
+			prev_crc = entry->crc;
 	}
 
 	cur_crc = hash_bytes_extended((const unsigned char *) new_data, size, 0);
