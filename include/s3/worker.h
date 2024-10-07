@@ -72,6 +72,8 @@ typedef struct
 	}			typeSpecific;
 } S3Task;
 
+#define PGDATA_CRC_FILENAME			ORIOLEDB_DATA_DIR "/pgdata.crc"
+
 extern Size s3_workers_shmem_needs(void);
 extern void s3_workers_init_shmem(Pointer ptr, bool found);
 extern void register_s3worker(int num);

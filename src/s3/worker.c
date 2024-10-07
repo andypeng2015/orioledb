@@ -45,8 +45,6 @@
 #include <sys/fcntl.h>
 #include <unistd.h>
 
-#define PGDATA_CRC_FILENAME			ORIOLEDB_DATA_DIR "/pgdata.crc"
-
 typedef struct S3WorkerCtl
 {
 	S3TaskLocation location;
@@ -164,7 +162,6 @@ s3_workers_wait_for_flush(void)
 void s3_workers_compact_hash(void)
 {
 	int			file;
-	int			rc;
 
 	file = BasicOpenFile(PGDATA_CRC_FILENAME, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY);
 	if (file < 0)
@@ -893,34 +890,6 @@ s3worker_main(Datum main_arg)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
-}
-
-/*
- * Read the file name and its checksum from the provided line buffer.
- * The line format is "file_name:file_crc".
- */
-static bool
-read_file_hash(StringInfo buf, char *file_name, uint64 *file_crc)
-{
-	char	   *separator;
-
-	/* If the line is empty, just skip it */
-	if (buf->len == 0)
-		return false;
-
-	separator = strchr(buf->data, ':');
-	if (separator == NULL)
-		ereport(FATAL,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("the line of the hash file \"%s\" is in wrong format: %s",
-						PGDATA_CRC_FILENAME, buf->data)));
-
-	*separator = '\0';
-	
-	strncpy(file_name, buf->data, MAXPGPATH);
-	*file_crc = pg_strtoint64(separator + 1);
-
-	return true;
 }
 
 /*

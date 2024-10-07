@@ -291,6 +291,10 @@ s3_perform_backup(int flags, S3TaskLocation maxLocation)
 	s3_workers_wait_for_flush();
 
 	s3_workers_compact_hash();
+
+	location = s3_schedule_file_write(chkpNum, PGDATA_CRC_FILENAME, false);
+
+	s3_queue_wait_for_location(Max(maxLocation, location));
 }
 
 static int64
