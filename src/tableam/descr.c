@@ -10,7 +10,6 @@
  *
  *-------------------------------------------------------------------------
  */
-
 #include "postgres.h"
 
 #include "orioledb.h"
@@ -130,7 +129,7 @@ read_evicted_data(Oid datoid, Oid relnode, bool delete)
 
 	result = o_btree_find_tuple_by_key(get_sys_tree(SYS_TREES_EVICTED_DATA),
 									   &keyTuple, BTreeKeyNonLeafKey,
-									   COMMITSEQNO_INPROGRESS, NULL,
+									   &o_in_progress_snapshot, NULL,
 									   CurrentMemoryContext, NULL);
 	if (O_TUPLE_IS_NULL(result))
 		return NULL;
@@ -187,17 +186,17 @@ orioledb_get_evicted_trees(PG_FUNCTION_ARGS)
 
 	it = o_btree_iterator_create(get_sys_tree(SYS_TREES_EVICTED_DATA),
 								 NULL, BTreeKeyNone,
-								 COMMITSEQNO_INPROGRESS, ForwardScanDirection);
+								 &o_in_progress_snapshot, ForwardScanDirection);
 
 	while (true)
 	{
 		OTuple		tuple;
-		CommitSeqNo tupCsn;
+		CommitSeqNo tupleCsn;
 		Datum		values[4];
 		bool		nulls[4] = {false};
 		EvictedTreeData *data;
 
-		tuple = o_btree_iterator_fetch(it, &tupCsn, NULL,
+		tuple = o_btree_iterator_fetch(it, &tupleCsn, NULL,
 									   BTreeKeyNone, false, NULL);
 		if (O_TUPLE_IS_NULL(tuple))
 			break;
@@ -495,6 +494,10 @@ o_tree_init_free_extents(BTreeDescr *desc)
 static void
 index_descr_free(OIndexDescr *tree)
 {
+	if (tree->old_leaf_slot)
+		ExecDropSingleTupleTableSlot(tree->old_leaf_slot);
+	if (tree->new_leaf_slot)
+		ExecDropSingleTupleTableSlot(tree->new_leaf_slot);
 	if (tree->leafTupdesc)
 		FreeTupleDesc(tree->leafTupdesc);
 	if (tree->nonLeafTupdesc)
@@ -872,7 +875,7 @@ o_find_shared_root_info(SharedRootInfoKey *key)
 
 	result_tuple = o_btree_find_tuple_by_key(get_sys_tree(SYS_TREES_SHARED_ROOT_INFO),
 											 &key_tuple, BTreeKeyNonLeafKey,
-											 COMMITSEQNO_INPROGRESS, NULL,
+											 &o_in_progress_snapshot, NULL,
 											 CurrentMemoryContext, NULL);
 
 	return (SharedRootInfo *) result_tuple.data;
@@ -1605,7 +1608,8 @@ orioledb_get_index_descrs(PG_FUNCTION_ARGS)
 }
 
 void
-o_invalidate_undo_item_callback(UndoLocation location, UndoStackItem *baseItem,
+o_invalidate_undo_item_callback(UndoLogType undoType, UndoLocation location,
+								UndoStackItem *baseItem,
 								OXid oxid, bool abort, bool changeCountsValid)
 {
 	InvalidateUndoStackItem *invalidateItem = (InvalidateUndoStackItem *) baseItem;
@@ -1627,7 +1631,7 @@ o_add_invalidate_undo_item(ORelOids oids, uint32 flags)
 	LocationIndex size;
 
 	size = sizeof(InvalidateUndoStackItem);
-	item = (InvalidateUndoStackItem *) get_undo_record_unreserved(UndoReserveTxn,
+	item = (InvalidateUndoStackItem *) get_undo_record_unreserved(UndoLogSystem,
 																  &location,
 																  MAXALIGN(size));
 	item->oids = oids;
@@ -1636,6 +1640,6 @@ o_add_invalidate_undo_item(ORelOids oids, uint32 flags)
 	item->header.base.indexType = oIndexPrimary;
 	item->header.base.itemSize = size;
 
-	add_new_undo_stack_item(location);
-	release_undo_size(UndoReserveTxn);
+	add_new_undo_stack_item(UndoLogSystem, location);
+	release_undo_size(UndoLogSystem);
 }

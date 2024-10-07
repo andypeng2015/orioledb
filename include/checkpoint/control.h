@@ -19,7 +19,14 @@
 
 typedef struct
 {
-	uint64		control_identifier;
+	UndoLocation lastUndoLocation;
+	UndoLocation checkpointRetainStartLocation;
+	UndoLocation checkpointRetainEndLocation;
+} CheckpointUndoInfo;
+
+typedef struct
+{
+	uint64		controlIdentifier;
 	uint32		lastCheckpointNumber;
 	CommitSeqNo lastCSN;
 	OXid		lastXid;
@@ -28,6 +35,7 @@ typedef struct
 	XLogRecPtr	replayStartPtr;
 	XLogRecPtr	sysTreesStartPtr;
 	uint64		mmapDataLength;
+	CheckpointUndoInfo undoInfo[(int) UndoLogsCount];
 	UndoLocation checkpointRetainStartLocation;
 	UndoLocation checkpointRetainEndLocation;
 	OXid		checkpointRetainXmin;

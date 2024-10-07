@@ -22,6 +22,7 @@
 #include "catalog/o_sys_cache.h"
 #include "catalog/sys_trees.h"
 #include "checkpoint/checkpoint.h"
+#include "indexam/handler.h"
 #include "recovery/logical.h"
 #include "recovery/recovery.h"
 #include "recovery/wal.h"
@@ -86,12 +87,12 @@ static Size catalog_buffers_count;
 static Size main_buffers_offset;
 
 Pointer		o_shared_buffers = NULL;
-Pointer		o_undo_buffers = NULL;
 OrioleDBPageDesc *page_descs = NULL;
 
 /* Custom GUC variables */
 int			main_buffers_guc;
 static int	undo_buffers_guc;
+static int	undo_system_buffers_guc;
 static int	xid_buffers_guc;
 int			max_procs;
 Size		orioledb_buffers_size;
@@ -99,6 +100,8 @@ Size		orioledb_buffers_count;
 Size		page_descs_size;
 Size		undo_circular_buffer_size;
 uint32		undo_buffers_count;
+Size		undo_system_circular_buffer_size;
+uint32		undo_system_buffers_count;
 Size		xid_circular_buffer_size;
 uint32		xid_buffers_count;
 bool		remove_old_checkpoint_files = true;
@@ -136,6 +139,7 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void (*prev_shmem_request_hook) (void) = NULL;
 static base_init_startup_hook_type prev_base_init_startup_hook = NULL;
 static get_relation_info_hook_type prev_get_relation_info_hook = NULL;
+static skip_tree_height_hook_type prev_skip_tree_height_hook = NULL;
 CheckPoint_hook_type next_CheckPoint_hook = NULL;
 static bool o_newlocale_from_collation(void);
 
@@ -198,6 +202,7 @@ static void orioledb_get_relation_info_hook(PlannerInfo *root,
 											Oid relationObjectId,
 											bool inhparent,
 											RelOptInfo *rel);
+static bool orioledb_skip_tree_height_hook(Relation indexRelation);
 
 PG_FUNCTION_INFO_V1(orioledb_page_stats);
 PG_FUNCTION_INFO_V1(orioledb_version);
@@ -316,6 +321,19 @@ _PG_init(void)
 							"Size of orioledb engine undo log buffers.",
 							NULL,
 							&undo_buffers_guc,
+							Max(128, 4 * max_procs),
+							4 * max_procs,
+							INT_MAX,
+							PGC_POSTMASTER,
+							GUC_UNIT_BLOCKS,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("orioledb.undo_system_buffers",
+							"Size of undo log buffers for orioledb system trees.",
+							NULL,
+							&undo_system_buffers_guc,
 							Max(128, 4 * max_procs),
 							4 * max_procs,
 							INT_MAX,
@@ -765,10 +783,15 @@ _PG_init(void)
 	undo_buffers_count = (uint32) undo_circular_buffer_size;
 	undo_circular_buffer_size *= ORIOLEDB_BLCKSZ;
 
+	undo_system_circular_buffer_size = ((Size) undo_system_buffers_guc * BLCKSZ) / 2;
+	undo_system_circular_buffer_size /= ORIOLEDB_BLCKSZ;
+	undo_system_buffers_count = (uint32) undo_system_circular_buffer_size;
+	undo_system_circular_buffer_size *= ORIOLEDB_BLCKSZ;
+
 	xid_circular_buffer_size = ((Size) xid_buffers_guc * BLCKSZ) / 2;
 	xid_circular_buffer_size /= ORIOLEDB_BLCKSZ;
 	xid_buffers_count = (uint32) xid_circular_buffer_size;
-	xid_circular_buffer_size *= ORIOLEDB_BLCKSZ / sizeof(pg_atomic_uint64);
+	xid_circular_buffer_size *= ORIOLEDB_BLCKSZ / sizeof(OXidMapItem);
 
 	page_descs_size = CACHELINEALIGN(mul_size(orioledb_buffers_count, sizeof(OrioleDBPageDesc)));
 
@@ -889,10 +912,13 @@ _PG_init(void)
 	reset_xmin_hook = orioledb_reset_xmin_hook;
 	prev_get_relation_info_hook = get_relation_info_hook;
 	get_relation_info_hook = orioledb_get_relation_info_hook;
+	prev_skip_tree_height_hook = skip_tree_height_hook;
+	skip_tree_height_hook = orioledb_skip_tree_height_hook;
 	xact_redo_hook = o_xact_redo_hook;
 	pg_newlocale_from_collation_hook = o_newlocale_from_collation;
 	prev_base_init_startup_hook = base_init_startup_hook;
 	base_init_startup_hook = o_base_init_startup_hook;
+	IndexAMRoutineHook = orioledb_indexam_routine_hook;
 	orioledb_setup_ddl_hooks();
 	stopevents_make_cxt();
 }
@@ -947,24 +973,31 @@ o_proc_shmem_init(Pointer ptr, bool found)
 
 		for (i = 0; i < max_procs; i++)
 		{
-			int			j;
+			int			j,
+						k;
 
-			pg_atomic_init_u64(&oProcData[i].reservedUndoLocation, InvalidUndoLocation);
-			pg_atomic_init_u64(&oProcData[i].snapshotRetainUndoLocation, InvalidUndoLocation);
-			pg_atomic_init_u64(&oProcData[i].transactionUndoRetainLocation, InvalidUndoLocation);
+			for (j = 0; j < (int) UndoLogsCount; j++)
+			{
+				pg_atomic_init_u64(&oProcData[i].undoRetainLocations[j].reservedUndoLocation, InvalidUndoLocation);
+				pg_atomic_init_u64(&oProcData[i].undoRetainLocations[j].snapshotRetainUndoLocation, InvalidUndoLocation);
+				pg_atomic_init_u64(&oProcData[i].undoRetainLocations[j].transactionUndoRetainLocation, InvalidUndoLocation);
+			}
 			pg_atomic_init_u64(&oProcData[i].commitInProgressXlogLocation, OWalInvalidCommitPos);
 			pg_atomic_init_u64(&oProcData[i].xmin, InvalidOXid);
 			oProcData[i].autonomousNestingLevel = 0;
 			memset(&oProcData[i].vxids, 0, sizeof(oProcData[i].vxids));
 			LWLockInitialize(&oProcData[i].undoStackLocationsFlushLock,
-							 undo_meta->undoStackLocationsFlushLockTrancheId);
+							 get_undo_meta_by_type(UndoLogRegular)->undoStackLocationsFlushLockTrancheId);
 			oProcData[i].flushUndoLocations = false;
 			for (j = 0; j < PROC_XID_ARRAY_SIZE; j++)
 			{
-				pg_atomic_init_u64(&oProcData[i].undoStackLocations[j].location, InvalidUndoLocation);
-				pg_atomic_init_u64(&oProcData[i].undoStackLocations[j].branchLocation, InvalidUndoLocation);
-				pg_atomic_init_u64(&oProcData[i].undoStackLocations[j].subxactLocation, InvalidUndoLocation);
-				pg_atomic_init_u64(&oProcData[i].undoStackLocations[j].onCommitLocation, InvalidUndoLocation);
+				for (k = 0; k < (int) UndoLogsCount; k++)
+				{
+					pg_atomic_init_u64(&oProcData[i].undoStackLocations[j][k].location, InvalidUndoLocation);
+					pg_atomic_init_u64(&oProcData[i].undoStackLocations[j][k].branchLocation, InvalidUndoLocation);
+					pg_atomic_init_u64(&oProcData[i].undoStackLocations[j][k].subxactLocation, InvalidUndoLocation);
+					pg_atomic_init_u64(&oProcData[i].undoStackLocations[j][k].onCommitLocation, InvalidUndoLocation);
+				}
 				oProcData[i].vxids[j].oxid = InvalidOXid;
 			}
 		}
@@ -1539,19 +1572,18 @@ jsonb_push_string_key(JsonbParseState **state, const char *key,
 static void
 orioledb_error_cleanup_hook(void)
 {
+	int			i;
+
 	GET_CUR_PROCDATA()->waitingForOxid = false;
 	release_all_page_locks();
 	ppool_release_all_pages();
-	release_undo_size(UndoReserveTxn);
+	for (i = 0; i < (int) UndoLogsCount; i++)
+		release_undo_size((UndoLogType) i);
 	btree_mark_incomplete_splits();
 	unset_skip_ucm();
 	btree_io_error_cleanup();
 	o_reset_syscache_hooks();
-	if (drop_index_list)
-	{
-		list_free_deep(drop_index_list);
-		drop_index_list = NIL;
-	}
+	o_rewrite_cleanup();
 	if (orioledb_s3_mode)
 		s3_headers_error_cleanup();
 }
@@ -1588,6 +1620,10 @@ orioledb_get_relation_info_hook(PlannerInfo *root,
 				{
 					IndexOptInfo *info = lfirst_node(IndexOptInfo, lc);
 					bool		hasbitmap;
+					OIndexNumber ix_num;
+					OIndexDescr *index_descr = NULL;
+					OInMemoryBlkno rootPageBlkno;
+					Page		root_page;
 
 					/*
 					 * TODO: Remove when parallel index scan will be
@@ -1607,12 +1643,40 @@ orioledb_get_relation_info_hook(PlannerInfo *root,
 						hasbitmap = hasbitmap && valid;
 					}
 					info->amhasgetbitmap = hasbitmap;
+
+					for (ix_num = 0; ix_num < descr->nIndices; ix_num++)
+					{
+						index_descr = descr->indices[ix_num];
+						if (index_descr->oids.reloid == info->indexoid)
+							break;
+					}
+					Assert(ix_num < descr->nIndices);
+					Assert(index_descr);
+					o_btree_load_shmem(&index_descr->desc);
+					rootPageBlkno = index_descr->desc.rootInfo.rootPageBlkno;
+					root_page = O_GET_IN_MEMORY_PAGE(rootPageBlkno);
+					info->tree_height = PAGE_GET_LEVEL(root_page);
 				}
 			}
 		}
 	}
 
 	table_close(relation, NoLock);
+}
+
+static bool
+orioledb_skip_tree_height_hook(Relation indexRelation)
+{
+	bool		result = false;
+	Relation	tbl;
+
+	tbl = table_open(indexRelation->rd_index->indrelid, NoLock);
+
+	if (is_orioledb_rel(tbl))
+		result = true;
+
+	table_close(tbl, NoLock);
+	return result;
 }
 
 Datum

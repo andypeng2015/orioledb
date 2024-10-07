@@ -91,12 +91,14 @@ typedef struct
 	uint8		recType;
 	uint8		xid[sizeof(TransactionId)];
 	uint8		xmin[sizeof(OXid)];
+	uint8		csn[sizeof(CommitSeqNo)];
 } WALRecJointCommit;
 
 typedef struct
 {
 	uint8		recType;
 	uint8		xmin[sizeof(OXid)];
+	uint8		csn[sizeof(CommitSeqNo)];
 } WALRecFinish;
 
 typedef struct
@@ -120,8 +122,9 @@ extern void add_savepoint_wal_record(SubTransactionId parentSubid,
 extern void add_rollback_to_savepoint_wal_record(SubTransactionId parentSubid);
 extern bool local_wal_is_empty(void);
 extern XLogRecPtr flush_local_wal(bool commit);
-extern void wal_commit(OXid oxid, TransactionId logicalXid);
-extern void wal_joint_commit(OXid oxid, TransactionId logicalXid, TransactionId xid);
+extern XLogRecPtr wal_commit(OXid oxid, TransactionId logicalXid);
+extern XLogRecPtr wal_joint_commit(OXid oxid, TransactionId logicalXid,
+								   TransactionId xid);
 extern void wal_after_commit(void);
 extern void wal_rollback(OXid oxid, TransactionId logicalXid);
 extern XLogRecPtr log_logical_wal_container(Pointer ptr, int length);
