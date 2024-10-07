@@ -289,6 +289,8 @@ s3_perform_backup(int flags, S3TaskLocation maxLocation)
 
 	/* Wait until all S3 workers finish flushing */
 	s3_workers_wait_for_flush();
+
+	s3_workers_compact_hash();
 }
 
 static int64

@@ -30,6 +30,7 @@
 #include "postmaster/bgwriter.h"
 #include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
+#include "storage/fd.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/sinvaladt.h"
@@ -39,7 +40,9 @@
 #include "utils/timeout.h"
 
 #include "pgstat.h"
+#include "utils/wait_event.h"
 
+#include <sys/fcntl.h>
 #include <unistd.h>
 
 #define PGDATA_CRC_FILENAME			ORIOLEDB_DATA_DIR "/pgdata.crc"
@@ -47,7 +50,7 @@
 typedef struct S3WorkerCtl
 {
 	S3TaskLocation location;
-	pg_atomic_flag flushPgdataCrc;
+	pg_atomic_flag flushPgdataHash;
 
 	Latch	   *latch;
 } S3WorkerCtl;
@@ -84,7 +87,7 @@ s3_workers_init_shmem(Pointer ptr, bool found)
 	for (i = 0; i < s3_num_workers; i++)
 	{
 		workers_ctl[i].location = InvalidS3TaskLocation;
-		pg_atomic_init_flag(&workers_ctl[i].flushPgdataCrc);
+		pg_atomic_init_flag(&workers_ctl[i].flushPgdataHash);
 
 		workers_ctl[i].latch = NULL;
 	}
@@ -125,7 +128,7 @@ register_s3worker(int num)
 void
 s3_worker_flush(int num)
 {
-	pg_atomic_test_set_flag(&workers_ctl[num].flushPgdataCrc);
+	pg_atomic_test_set_flag(&workers_ctl[num].flushPgdataHash);
 	SetLatch(workers_ctl[num].latch);
 }
 
@@ -142,7 +145,7 @@ s3_workers_wait_for_flush(void)
 		/* Workers flushed their state if flushPgdataCrc is unset */
 		for (int i = 0; all_flushed && (i < s3_num_workers); i++)
 		{
-			if (!pg_atomic_unlocked_test_flag(&workers_ctl[i].flushPgdataCrc))
+			if (!pg_atomic_unlocked_test_flag(&workers_ctl[i].flushPgdataHash))
 				all_flushed = false;
 		}
 
@@ -153,6 +156,71 @@ s3_workers_wait_for_flush(void)
 	}
 
 	ConditionVariableCancelSleep();
+}
+
+/*
+ * Compact all S3 workers PGDATA hash files into one file.
+ */
+void s3_workers_compact_hash(void)
+{
+	int			file;
+	int			rc;
+
+	file = BasicOpenFile(PGDATA_CRC_FILENAME, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY);
+	if (file < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create file \"%s\": %m", PGDATA_CRC_FILENAME)));
+
+	for (int i = 0; i < s3_num_workers; i++)
+	{
+		int			worker_file;
+		char		worker_filename[MAXPGPATH];
+		int			readBytes;
+		char		buffer[8192];
+
+		snprintf(worker_filename, sizeof(worker_filename), "%s.%d",
+				 PGDATA_CRC_FILENAME, i);
+
+		worker_file = BasicOpenFile(worker_filename, O_RDONLY | PG_BINARY);
+		if (worker_file < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not open file \"%s\": %m", worker_filename)));
+
+		while ((readBytes = pg_pread(worker_file, buffer, sizeof(buffer), 0)) > 0)
+		{
+			if (pg_pwrite(file, buffer, sizeof(buffer), 0) != sizeof(buffer))
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not write file \"%s\": %m", PGDATA_CRC_FILENAME)));
+		}
+
+		if (readBytes < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read file \"%s\": %m", worker_filename)));
+
+		close(worker_file);
+	}
+
+	if (pg_fsync(file) != 0)
+		ereport(FATAL,
+				(errcode_for_file_access(),
+				 errmsg("could not fsync file \"%s\": %m", PGDATA_CRC_FILENAME)));
+
+	close(file);
+
+	/* The compaction is completed, now we can remove worker files */
+	for (int i = 0; i < s3_num_workers; i++)
+	{
+		char		worker_filename[MAXPGPATH];
+
+		snprintf(worker_filename, sizeof(worker_filename), "%s.%d",
+				 PGDATA_CRC_FILENAME, i);
+
+		unlink(worker_filename);
+	}
 }
 
 /*
@@ -761,7 +829,7 @@ s3worker_main(Datum main_arg)
 
 	ResetLatch(MyLatch);
 
-	pg_atomic_clear_flag(&workers_ctl[num].flushPgdataCrc);
+	pg_atomic_clear_flag(&workers_ctl[num].flushPgdataHash);
 	workers_ctl[num].latch = MyLatch;
 
 
@@ -797,10 +865,10 @@ s3worker_main(Datum main_arg)
 				shutdown_requested = true;
 
 			if (pgdata_crc_buf != NULL &&
-				!pg_atomic_unlocked_test_flag(&workers_ctl[num].flushPgdataCrc))
+				!pg_atomic_unlocked_test_flag(&workers_ctl[num].flushPgdataHash))
 			{
 				flush_pgdata_hash(num);
-				pg_atomic_clear_flag(&workers_ctl[num].flushPgdataCrc);
+				pg_atomic_clear_flag(&workers_ctl[num].flushPgdataHash);
 			}
 
 			/*
@@ -861,25 +929,13 @@ read_file_hash(StringInfo buf, char *file_name, uint64 *file_crc)
 static HTAB *
 init_pgdata_hash(void)
 {
-	Pointer		data;
+	int			file;
 	StringInfoData buf;
-	Pointer		ptr;
-	uint64		data_size;
+	uint32		datalen;
+	int			readBytes;
 	HASHCTL		ctl;
 	HTAB	   *hash;
 	
-	data = read_file(PGDATA_CRC_FILENAME, &data_size);
-	if (data == NULL)
-	{
-		/* In case of the file is missing just return NULL */
-		return NULL;
-	}
-
-	buf.cursor = 0;
-	buf.maxlen = -1;
-	buf.data = data;
-	buf.len = data_size;
-
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = MAXPGPATH;
 	ctl.entrysize = sizeof(uint64);
@@ -890,13 +946,29 @@ init_pgdata_hash(void)
 					   &ctl,
 					   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
-	while (buf.cursor < buf.len)
+	file = BasicOpenFile(PGDATA_CRC_FILENAME, O_RDONLY | PG_BINARY);
+	if (file < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read file \"%s\": %m", PGDATA_CRC_FILENAME)));
+
+	initStringInfo(&buf);
+
+	while ((readBytes = pg_pread(file, (char *) &datalen, sizeof(datalen), 0)) > 0)
 	{
 		const char *filename;
 		uint64		file_crc;
 		uint64	   *entry;
 		bool		found;
 
+		resetStringInfo(&buf);
+		readBytes = pg_pread(file, buf.data, datalen, 0);
+		if (readBytes != datalen)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read file \"%s\": %m", PGDATA_CRC_FILENAME)));
+
+		/* Put the filename and its checksum into the hash table */
 		filename = pq_getmsgrawstring(&buf);
 		pq_copymsgbytes(&buf, (char *) &file_crc, sizeof(file_crc));
 
@@ -911,6 +983,15 @@ init_pgdata_hash(void)
 		*entry = file_crc;
 	}
 
+	if (readBytes < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read file \"%s\": %m", PGDATA_CRC_FILENAME)));
+
+	pfree(buf.data);
+
+	close(file);
+
 	return hash;
 }
 
@@ -921,36 +1002,35 @@ static void
 flush_pgdata_hash(int num)
 {
 	char		filename[MAXPGPATH];
-	File		file;
+	int			file;
 	int			rc;
 
 	Assert(pgdata_crc_buf != NULL);
 
 	snprintf(filename, sizeof(filename), "%s.%d", PGDATA_CRC_FILENAME, num);
 
-	file = PathNameOpenFile(filename, O_CREAT | O_RDWR | PG_BINARY);
+	file = BasicOpenFile(filename, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY);
 	if (file <= 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", filename)));
 
-	rc = FileWrite(file, pgdata_crc_buf->data, pgdata_crc_buf->len, 0,
-				   WAIT_EVENT_BUFFILE_WRITE);
+	rc = pg_pwrite(file, pgdata_crc_buf->data, pgdata_crc_buf->len, 0);
 	if (rc < 0 || rc != pgdata_crc_buf->len)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write file \"%s\": %m", filename)));
 
-	if (FileSync(file, WAIT_EVENT_BUFFILE_WRITE) < 0)
-		ereport(ERROR,
+	if (pg_fsync(file) != 0)
+		ereport(FATAL,
 				(errcode_for_file_access(),
-				 errmsg("could not sync file \"%s\": %m", filename)));
+				 errmsg("could not fsync file \"%s\": %m", filename)));
+
+	close(file);
 
 	pfree(pgdata_crc_buf->data);
 	pfree(pgdata_crc_buf);
 	pgdata_crc_buf = NULL;
-
-	FileClose(file);
 }
 
 /*
@@ -966,6 +1046,8 @@ check_pgdata_file_changed(const char *filename, Pointer new_data, uint64 size)
 {
 	uint64		prev_crc = 0;
 	uint64		cur_crc;
+	uint32		filenamelen,
+				datalen;
 
 	if (pgdata_hash == NULL)
 		pgdata_hash = init_pgdata_hash();
@@ -988,6 +1070,9 @@ check_pgdata_file_changed(const char *filename, Pointer new_data, uint64 size)
 	if (pgdata_crc_buf == NULL)
 		pgdata_crc_buf = makeStringInfo();
 
+	filenamelen = strlen(filename);
+	datalen = filenamelen + 1 /* null-byte */ + sizeof(cur_crc) + 1 /* null-byte */;
+	appendBinaryStringInfoNT(pgdata_crc_buf, &datalen, sizeof(datalen));
 	appendBinaryStringInfo(pgdata_crc_buf, filename, strlen(filename));
 	appendBinaryStringInfo(pgdata_crc_buf, &cur_crc, sizeof(cur_crc));
 
