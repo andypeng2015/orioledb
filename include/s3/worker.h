@@ -79,8 +79,6 @@ typedef struct
 extern Size s3_workers_shmem_needs(void);
 extern void s3_workers_init_shmem(Pointer ptr, bool found);
 extern void register_s3worker(int num);
-extern void s3_worker_flush(int num);
-extern void s3_workers_wait_for_flush(void);
 extern void s3_workers_compact_hash(void);
 PGDLLEXPORT void s3worker_main(Datum);
 
