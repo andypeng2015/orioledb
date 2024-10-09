@@ -143,7 +143,8 @@ s3_workers_wait_for_flush(void)
 		if (pg_atomic_read_u32(&workers_ctl->pgFilesFlushCnt) == 0)
 			break;
 
-		ConditionVariableSleep(&workers_ctl->pgFilesFlushedCV, WAIT_EVENT_BGWRITER_MAIN);
+		ConditionVariableTimedSleep(&workers_ctl->pgFilesFlushedCV, BgWriterDelay,
+									WAIT_EVENT_BGWRITER_MAIN);
 	}
 
 	ConditionVariableCancelSleep();
@@ -169,7 +170,7 @@ s3_workers_compact_hash(void)
 	{
 		int			worker_file;
 		char		worker_filename[MAXPGPATH];
-		int			readBytes;
+		Size		readBytes;
 		char		buffer[8192];
 
 		snprintf(worker_filename, sizeof(worker_filename), "%s.%d",
@@ -190,9 +191,9 @@ s3_workers_compact_hash(void)
 					 errmsg("could not open file \"%s\": %m", worker_filename)));
 		}
 
-		while ((readBytes = pg_pread(worker_file, buffer, sizeof(buffer), 0)) > 0)
+		while ((readBytes = read(worker_file, buffer, sizeof(buffer))) > 0)
 		{
-			if (pg_pwrite(file, buffer, sizeof(buffer), 0) != sizeof(buffer))
+			if (write(file, buffer, readBytes) != readBytes)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not write file \"%s\": %m", PGDATA_CRC_FILENAME)));
@@ -930,8 +931,8 @@ init_pgfiles_hash(void)
 {
 	int			file;
 	StringInfoData buf;
-	uint32		datalen;
-	int			readBytes;
+	Size		datalen;
+	Size		readBytes;
 	HASHCTL		ctl;
 	HTAB	   *hash;
 	
@@ -958,7 +959,7 @@ init_pgfiles_hash(void)
 
 	initStringInfo(&buf);
 
-	while ((readBytes = pg_pread(file, (char *) &datalen, sizeof(datalen), 0)) > 0)
+	while ((readBytes = read(file, (char *) &datalen, sizeof(datalen))) > 0)
 	{
 		const char *filename;
 		uint64		file_crc;
@@ -966,11 +967,15 @@ init_pgfiles_hash(void)
 		bool		found;
 
 		resetStringInfo(&buf);
-		readBytes = pg_pread(file, buf.data, datalen, 0);
+		enlargeStringInfo(&buf, datalen);
+
+		readBytes = read(file, buf.data, datalen);
 		if (readBytes != datalen)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not read file \"%s\": %m", PGDATA_CRC_FILENAME)));
+
+		buf.len = datalen;
 
 		/* Put the filename and its checksum into the hash table */
 		filename = pq_getmsgrawstring(&buf);
@@ -1019,7 +1024,7 @@ flush_pgfiles_hash(int worker_num)
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", filename)));
 
-	rc = pg_pwrite(file, pgfiles_crc_buf->data, pgfiles_crc_buf->len, 0);
+	rc = write(file, pgfiles_crc_buf->data, pgfiles_crc_buf->len);
 	if (rc < 0 || rc != pgfiles_crc_buf->len)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -1054,7 +1059,7 @@ check_pgfile_changed(const char *filename, Pointer new_data, uint64 size)
 {
 	uint64		prev_crc = 0;
 	uint64		cur_crc;
-	uint32		filenamelen,
+	Size		filenamelen,
 				datalen;
 
 	if (pgfiles_hash == NULL)
@@ -1086,8 +1091,10 @@ check_pgfile_changed(const char *filename, Pointer new_data, uint64 size)
 	filenamelen = strlen(filename);
 	datalen = filenamelen + 1 /* null-byte */ + sizeof(cur_crc) + 1 /* null-byte */;
 	appendBinaryStringInfoNT(pgfiles_crc_buf, &datalen, sizeof(datalen));
-	appendBinaryStringInfo(pgfiles_crc_buf, filename, strlen(filename));
+	appendBinaryStringInfo(pgfiles_crc_buf, filename, filenamelen);
+	appendStringInfoChar(pgfiles_crc_buf, '\0');
 	appendBinaryStringInfo(pgfiles_crc_buf, &cur_crc, sizeof(cur_crc));
+	appendStringInfoChar(pgfiles_crc_buf, '\0');
 
 	return prev_crc != cur_crc;
 }
