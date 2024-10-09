@@ -60,8 +60,8 @@ typedef struct S3WorkerCtl
 static volatile sig_atomic_t	shutdown_requested = false;
 
 static S3WorkerCtl *workers_ctl = NULL;
-static HTAB		   *pgfiles_hash = NULL;
-static StringInfo	pgfiles_crc_buf = NULL;
+static HTAB *pgfiles_hash = NULL;
+static StringInfo pgfiles_crc_buf = NULL;
 
 typedef struct PGDataHashEntry
 {
@@ -935,7 +935,7 @@ init_pgfiles_hash(void)
 	Size		readBytes;
 	HASHCTL		ctl;
 	HTAB	   *hash;
-	
+
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = MAXPGPATH;
 	ctl.entrysize = sizeof(PGDataHashEntry);
@@ -1089,7 +1089,7 @@ check_pgfile_changed(const char *filename, Pointer new_data, uint64 size)
 
 	/* Prepare the new checksum to be written to the file */
 	filenamelen = strlen(filename);
-	datalen = filenamelen + 1 /* null-byte */ + sizeof(cur_crc) + 1 /* null-byte */;
+	datalen = filenamelen + 1 /* null-byte */ + sizeof(cur_crc) + 1 /* null-byte */ ;
 	appendBinaryStringInfoNT(pgfiles_crc_buf, &datalen, sizeof(datalen));
 	appendBinaryStringInfo(pgfiles_crc_buf, filename, filenamelen);
 	appendStringInfoChar(pgfiles_crc_buf, '\0');
