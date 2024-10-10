@@ -961,7 +961,7 @@ init_pgfiles_hash(void)
 
 	while ((readBytes = read(file, (char *) &datalen, sizeof(datalen))) > 0)
 	{
-		const char *filename;
+		char		key[MAXPGPATH];
 		uint64		file_crc;
 		PGDataHashEntry *entry;
 		bool		found;
@@ -978,16 +978,18 @@ init_pgfiles_hash(void)
 		buf.len = datalen;
 
 		/* Put the filename and its checksum into the hash table */
-		filename = pq_getmsgrawstring(&buf);
+		MemSet(key, 0, sizeof(key));
+		strncpy(key, pq_getmsgrawstring(&buf), MAXPGPATH);
+
 		pq_copymsgbytes(&buf, (char *) &file_crc, sizeof(file_crc));
 
-		entry = (PGDataHashEntry *) hash_search(hash, filename, HASH_ENTER, &found);
+		entry = (PGDataHashEntry *) hash_search(hash, key, HASH_ENTER, &found);
 		/* Normally we shouldn't have duplicated keys in the file */
 		if (found)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("the file name is duplicated in the hash file \"%s\": %s",
-							PGDATA_CRC_FILENAME, filename)));
+							PGDATA_CRC_FILENAME, key)));
 
 		entry->crc = file_crc;
 	}
