@@ -57,7 +57,7 @@ typedef struct S3WorkerCtl
 	S3TaskLocation locations[FLEXIBLE_ARRAY_MEMBER];
 } S3WorkerCtl;
 
-static volatile sig_atomic_t	shutdown_requested = false;
+static volatile sig_atomic_t shutdown_requested = false;
 
 static S3WorkerCtl *workers_ctl = NULL;
 static HTAB *pgfiles_hash = NULL;
