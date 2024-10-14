@@ -56,7 +56,7 @@ hex_string(Pointer data, int len)
 
 	hex_encode(data, len, result);
 
-	result[len * 2] = 0;
+	result[len * 2] = '\0';
 	return result;
 }
 

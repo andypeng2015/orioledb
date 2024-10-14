@@ -74,12 +74,13 @@ typedef struct
 	}			typeSpecific;
 } S3Task;
 
-#define PGDATA_CRC_FILENAME			ORIOLEDB_DATA_DIR "/pgdata.crc"
+#define PGFILES_CRC_FILENAME		ORIOLEDB_DATA_DIR "/pgfiles.crc"
 
 extern Size s3_workers_shmem_needs(void);
 extern void s3_workers_init_shmem(Pointer ptr, bool found);
 extern void register_s3worker(int num);
-extern void s3_workers_compact_hash(void);
+extern void s3_workers_checkpoint_init(void);
+extern void s3_workers_checkpoint_finish(void);
 PGDLLEXPORT void s3worker_main(Datum);
 
 extern S3TaskLocation s3_schedule_file_write(uint32 chkpNum, char *filename,

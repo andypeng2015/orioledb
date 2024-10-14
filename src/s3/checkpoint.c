@@ -236,6 +236,8 @@ s3_perform_backup(int flags, S3TaskLocation maxLocation)
 
 	s3_headers_sync();
 
+	s3_workers_checkpoint_init();
+
 	initStringInfo(&tablespaceMapData);
 	state.tablespaces = get_tablespaces(&tablespaceMapData);
 
@@ -280,13 +282,14 @@ s3_perform_backup(int flags, S3TaskLocation maxLocation)
 	location = flush_small_files(&state);
 	maxLocation = Max(maxLocation, location);
 
+	list_free_deep(state.tablespaces);
 	pfree(tablespaceMapData.data);
 	s3_queue_wait_for_location(maxLocation);
 
 	/* Wait until all S3 workers finish flushing and compact hash files */
-	s3_workers_compact_hash();
+	s3_workers_checkpoint_finish();
 
-	location = s3_schedule_file_write(chkpNum, PGDATA_CRC_FILENAME, false);
+	location = s3_schedule_file_write(chkpNum, PGFILES_CRC_FILENAME, false);
 
 	s3_queue_wait_for_location(Max(maxLocation, location));
 }

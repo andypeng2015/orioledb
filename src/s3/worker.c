@@ -22,7 +22,9 @@
 #include "s3/worker.h"
 
 #include "access/xlog_internal.h"
+#include "common/cryptohash.h"
 #include "common/hashfn.h"
+#include "common/sha2.h"
 #include "common/string.h"
 #include "lib/stringinfo.h"
 #include "libpq/pqformat.h"
@@ -47,40 +49,63 @@
 #include <sys/fcntl.h>
 #include <unistd.h>
 
+
+#define WORKERS_PGFILES_SIZE 50
+
+#define GET_WORKER_PGFILES(worker_num) \
+	(workers_pgfiles + WORKERS_PGFILES_SIZE * (worker_num))
+
+#define PUT_WORKER_PGFILES_ENTRY(worker_num, entry) \
+	do { \
+		memcpy(GET_WORKER_PGFILES(worker_num) + \
+			   sizeof(PGFilesHashEntry) * workers_pgfiles_len[worker_num], \
+			   (entry), \
+			   sizeof(PGFilesHashEntry)); \
+		workers_pgfiles_len[worker_num] += 1; \
+	} while(0)
+
 typedef struct S3WorkerCtl
 {
 	pg_atomic_uint32 pgFilesCnt;
-	pg_atomic_uint32 pgFilesFlushCnt;
 
 	ConditionVariable pgFilesFlushedCV;
-
-	S3TaskLocation locations[FLEXIBLE_ARRAY_MEMBER];
 } S3WorkerCtl;
 
+typedef struct PGFilesHashEntry
+{
+	char		filename[MAXPGPATH];
+	char		hash[PG_SHA256_DIGEST_STRING_LENGTH];
+	bool		changed;	/* true if crc changed since last checkpoint */
+} PGFilesHashEntry;
+
 static volatile sig_atomic_t shutdown_requested = false;
+static volatile S3TaskLocation *workers_locations = NULL;
+static PGFilesHashEntry *workers_pgfiles = NULL;
+static volatile uint32 *workers_pgfiles_len = NULL;
 
 static S3WorkerCtl *workers_ctl = NULL;
 static HTAB *pgfiles_hash = NULL;
-static StringInfo pgfiles_crc_buf = NULL;
 
-typedef struct PGDataHashEntry
-{
-	char		filename[MAXPGPATH];
-	uint64		crc;
-} PGDataHashEntry;
+static int worker_num;
 
 static HTAB *init_pgfiles_hash(void);
-static void flush_pgfiles_hash(int worker_num);
-static bool check_pgfile_changed(const char *filename, Pointer new_data,
-								 uint64 size);
+static void flush_pgfiles_hash(void);
+static PGFilesHashEntry check_pgfile_changed(const char *filename,
+											 Pointer new_data, uint64 size);
 
 Size
 s3_workers_shmem_needs(void)
 {
 	Size		size;
 
-	size = CACHELINEALIGN(offsetof(S3WorkerCtl, locations) +
-						  sizeof(S3TaskLocation) * s3_num_workers);
+	size = CACHELINEALIGN(sizeof(S3WorkerCtl));
+	size = add_size(size,
+					CACHELINEALIGN(mul_size(sizeof(S3TaskLocation), s3_num_workers)));
+	size = add_size(size,
+					CACHELINEALIGN(mul_size(sizeof(uint32), s3_num_workers)));
+	size = add_size(size,
+					CACHELINEALIGN(mul_size(sizeof(PGFilesHashEntry),
+											s3_num_workers * WORKERS_PGFILES_SIZE)));
 
 	return size;
 }
@@ -91,16 +116,27 @@ s3_workers_init_shmem(Pointer ptr, bool found)
 	int			i;
 
 	workers_ctl = (S3WorkerCtl *) ptr;
+	ptr += CACHELINEALIGN(sizeof(S3WorkerCtl));
+
+	workers_locations = (S3TaskLocation *) ptr;
+	ptr += CACHELINEALIGN(mul_size(sizeof(S3TaskLocation), s3_num_workers));
+
+	workers_pgfiles_len = (uint32 *) ptr;
+	ptr += CACHELINEALIGN(mul_size(sizeof(uint32), s3_num_workers));
+
+	workers_pgfiles = (PGFilesHashEntry *) ptr;
 
 	if (!found)
 	{
 		pg_atomic_init_u32(&workers_ctl->pgFilesCnt, 0);
-		pg_atomic_init_u32(&workers_ctl->pgFilesFlushCnt, 0);
 
 		ConditionVariableInit(&workers_ctl->pgFilesFlushedCV);
 
 		for (i = 0; i < s3_num_workers; i++)
-			workers_ctl->locations[i] = InvalidS3TaskLocation;
+		{
+			workers_locations[i] = InvalidS3TaskLocation;
+			workers_pgfiles_len[i] = 0;
+		}
 	}
 }
 
@@ -140,7 +176,14 @@ s3_workers_wait_for_flush(void)
 
 	for (;;)
 	{
-		if (pg_atomic_read_u32(&workers_ctl->pgFilesFlushCnt) == 0)
+		int			all_flushed = true;
+
+		for (int i = 0; (i < s3_num_workers) && all_flushed; i++)
+		{
+			if (workers_pgfiles_len[i] > 0)
+				all_flushed = false;
+		}
+		if (all_flushed)
 			break;
 
 		ConditionVariableTimedSleep(&workers_ctl->pgFilesFlushedCV, BgWriterDelay,
@@ -151,20 +194,38 @@ s3_workers_wait_for_flush(void)
 }
 
 /*
+ * Prepare S3 workers to checkpoint PGDATA files.
+ */
+void
+s3_workers_checkpoint_init(void)
+{
+	/* Just in case delete any leftover files */
+	for (int i = 0; i < s3_num_workers; i++)
+	{
+		char		worker_filename[MAXPGPATH];
+
+		snprintf(worker_filename, sizeof(worker_filename), "%s.%d",
+				 PGFILES_CRC_FILENAME, i);
+
+		unlink(worker_filename);
+	}
+}
+
+/*
  * Compact all S3 workers PGDATA hash files into one file.
  */
 void
-s3_workers_compact_hash(void)
+s3_workers_checkpoint_finish(void)
 {
 	int			file;
 
 	s3_workers_wait_for_flush();
 
-	file = BasicOpenFile(PGDATA_CRC_FILENAME, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY);
+	file = BasicOpenFile(PGFILES_CRC_FILENAME, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY);
 	if (file < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not create file \"%s\": %m", PGDATA_CRC_FILENAME)));
+				 errmsg("could not create file \"%s\": %m", PGFILES_CRC_FILENAME)));
 
 	for (int i = 0; i < s3_num_workers; i++)
 	{
@@ -174,7 +235,7 @@ s3_workers_compact_hash(void)
 		char		buffer[8192];
 
 		snprintf(worker_filename, sizeof(worker_filename), "%s.%d",
-				 PGDATA_CRC_FILENAME, i);
+				 PGFILES_CRC_FILENAME, i);
 
 		worker_file = BasicOpenFile(worker_filename, O_RDONLY | PG_BINARY);
 		if (worker_file < 0)
@@ -196,7 +257,7 @@ s3_workers_compact_hash(void)
 			if (write(file, buffer, readBytes) != readBytes)
 				ereport(ERROR,
 						(errcode_for_file_access(),
-						 errmsg("could not write file \"%s\": %m", PGDATA_CRC_FILENAME)));
+						 errmsg("could not write file \"%s\": %m", PGFILES_CRC_FILENAME)));
 		}
 
 		if (readBytes < 0)
@@ -210,7 +271,7 @@ s3_workers_compact_hash(void)
 	if (pg_fsync(file) != 0)
 		ereport(FATAL,
 				(errcode_for_file_access(),
-				 errmsg("could not fsync file \"%s\": %m", PGDATA_CRC_FILENAME)));
+				 errmsg("could not fsync file \"%s\": %m", PGFILES_CRC_FILENAME)));
 
 	close(file);
 
@@ -220,7 +281,7 @@ s3_workers_compact_hash(void)
 		char		worker_filename[MAXPGPATH];
 
 		snprintf(worker_filename, sizeof(worker_filename), "%s.%d",
-				 PGDATA_CRC_FILENAME, i);
+				 PGFILES_CRC_FILENAME, i);
 
 		unlink(worker_filename);
 	}
@@ -482,9 +543,21 @@ s3process_task(uint64 taskLocation)
 
 		data = read_file(filename, &size);
 
-		if (data != NULL && check_pgfile_changed(filename, data, size))
+		if (data != NULL)
 		{
-			(void) s3_put_object_with_contents(objectname, data, size, false);
+			PGFilesHashEntry entry;
+
+			entry = check_pgfile_changed(filename, data, size);
+
+			if (entry.changed)
+				(void) s3_put_object_with_contents(objectname, data, size, false);
+
+			/* Now after all operations above we can safely flush the entry */
+			if (workers_pgfiles_len[worker_num] == WORKERS_PGFILES_SIZE)
+				flush_pgfiles_hash();
+
+			PUT_WORKER_PGFILES_ENTRY(worker_num, &entry);
+
 			pfree(data);
 		}
 
@@ -827,8 +900,9 @@ void
 s3worker_main(Datum main_arg)
 {
 	int			rc,
-				wake_events = WL_LATCH_SET | WL_POSTMASTER_DEATH | WL_TIMEOUT,
-				num = Int32GetDatum(main_arg);
+				wake_events = WL_LATCH_SET | WL_POSTMASTER_DEATH | WL_TIMEOUT;
+
+	worker_num = Int32GetDatum(main_arg);
 
 	/* enable timeout for relation lock */
 	RegisterTimeout(DEADLOCK_TIMEOUT, CheckDeadLockAlert);
@@ -849,7 +923,7 @@ s3worker_main(Datum main_arg)
 	pqsignal(SIGTERM, handle_sigterm);
 	BackgroundWorkerUnblockSignals();
 
-	elog(LOG, "orioledb s3 worker %d started", num);
+	elog(LOG, "orioledb s3 worker %d started", worker_num);
 
 	CurTransactionContext = AllocSetContextCreate(TopMemoryContext,
 												  "orioledb s3worker current transaction context",
@@ -868,10 +942,10 @@ s3worker_main(Datum main_arg)
 		 * There might be task to process saved into shared memory.  If so,
 		 * pick and process it.
 		 */
-		if (workers_ctl->locations[num] != InvalidS3TaskLocation)
+		if (workers_locations[worker_num] != InvalidS3TaskLocation)
 		{
-			s3process_task(workers_ctl->locations[num]);
-			workers_ctl->locations[num] = InvalidS3TaskLocation;
+			s3process_task(workers_locations[worker_num]);
+			workers_locations[worker_num] = InvalidS3TaskLocation;
 		}
 
 		while (true)
@@ -898,22 +972,25 @@ s3worker_main(Datum main_arg)
 			 */
 			while ((taskLocation = s3_queue_try_pick_task()) != InvalidS3TaskLocation)
 			{
-				workers_ctl->locations[num] = taskLocation;
+				workers_locations[worker_num] = taskLocation;
 				s3process_task(taskLocation);
-				workers_ctl->locations[num] = InvalidS3TaskLocation;
+				workers_locations[worker_num] = InvalidS3TaskLocation;
 			}
 
-			if (pgfiles_crc_buf != NULL &&
+			if (workers_pgfiles_len[worker_num] > 0 &&
 				pg_atomic_read_u32(&workers_ctl->pgFilesCnt) == 0)
 			{
-				flush_pgfiles_hash(num);
+				flush_pgfiles_hash();
+
+				hash_destroy(pgfiles_hash);
+				pgfiles_hash = NULL;
 
 				ConditionVariableBroadcast(&workers_ctl->pgFilesFlushedCV);
 			}
 
 			ResetLatch(MyLatch);
 		}
-		elog(LOG, "orioledb s3 worker %d is shut down", num);
+		elog(LOG, "orioledb s3 worker %d is shut down", worker_num);
 	}
 	PG_CATCH();
 	{
@@ -930,23 +1007,22 @@ static HTAB *
 init_pgfiles_hash(void)
 {
 	int			file;
-	StringInfoData buf;
-	Size		datalen;
+	PGFilesHashEntry entry;
 	Size		readBytes;
 	HASHCTL		ctl;
 	HTAB	   *hash;
 
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = MAXPGPATH;
-	ctl.entrysize = sizeof(PGDataHashEntry);
+	ctl.entrysize = sizeof(PGFilesHashEntry);
 	ctl.hcxt = CurTransactionContext;
 
-	hash = hash_create("pgdata hash",
+	hash = hash_create("pgfiles hash",
 					   32,		/* arbitrary initial size */
 					   &ctl,
 					   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
-	file = BasicOpenFile(PGDATA_CRC_FILENAME, O_RDONLY | PG_BINARY);
+	file = BasicOpenFile(PGFILES_CRC_FILENAME, O_RDONLY | PG_BINARY);
 	if (file < 0)
 	{
 		if (errno == ENOENT)
@@ -954,52 +1030,38 @@ init_pgfiles_hash(void)
 
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not read file \"%s\": %m", PGDATA_CRC_FILENAME)));
+				 errmsg("could not read file \"%s\": %m", PGFILES_CRC_FILENAME)));
 	}
 
-	initStringInfo(&buf);
-
-	while ((readBytes = read(file, (char *) &datalen, sizeof(datalen))) > 0)
+	while ((readBytes = read(file, (char *) &entry, sizeof(PGFilesHashEntry))) > 0)
 	{
-		char		key[MAXPGPATH];
-		uint64		file_crc;
-		PGDataHashEntry *entry;
+		PGFilesHashEntry *new_entry;
 		bool		found;
 
-		resetStringInfo(&buf);
-		enlargeStringInfo(&buf, datalen);
-
-		readBytes = read(file, buf.data, datalen);
-		if (readBytes != datalen)
+		if (readBytes != sizeof(PGFilesHashEntry))
 			ereport(ERROR,
 					(errcode_for_file_access(),
-					 errmsg("could not read file \"%s\": %m", PGDATA_CRC_FILENAME)));
-
-		buf.len = datalen;
+					 errmsg("could not read file \"%s\": %m", PGFILES_CRC_FILENAME)));
 
 		/* Put the filename and its checksum into the hash table */
-		MemSet(key, 0, sizeof(key));
-		strncpy(key, pq_getmsgrawstring(&buf), MAXPGPATH);
-
-		pq_copymsgbytes(&buf, (char *) &file_crc, sizeof(file_crc));
-
-		entry = (PGDataHashEntry *) hash_search(hash, key, HASH_ENTER, &found);
+		new_entry = (PGFilesHashEntry *) hash_search(hash, entry.filename,
+													 HASH_ENTER, &found);
 		/* Normally we shouldn't have duplicated keys in the file */
 		if (found)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("the file name is duplicated in the hash file \"%s\": %s",
-							PGDATA_CRC_FILENAME, key)));
+							PGFILES_CRC_FILENAME, entry.filename)));
 
-		entry->crc = file_crc;
+		/* filename is already filled in */
+		strncpy(new_entry->hash, entry.hash, sizeof(entry.hash));
+		new_entry->changed = entry.changed;
 	}
 
 	if (readBytes < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not read file \"%s\": %m", PGDATA_CRC_FILENAME)));
-
-	pfree(buf.data);
+				 errmsg("could not read file \"%s\": %m", PGFILES_CRC_FILENAME)));
 
 	close(file);
 
@@ -1010,24 +1072,30 @@ init_pgfiles_hash(void)
  * Save current workers' PGDATA files hash into a temporary file.
  */
 static void
-flush_pgfiles_hash(int worker_num)
+flush_pgfiles_hash(void)
 {
 	char		filename[MAXPGPATH];
 	int			file;
-	int			rc;
+	Size		pgfiles_size;
+	Size		size_written;
 
-	Assert(pgfiles_crc_buf != NULL);
+	Assert(workers_pgfiles_len[worker_num] > 0);
 
-	snprintf(filename, sizeof(filename), "%s.%d", PGDATA_CRC_FILENAME, worker_num);
+	snprintf(filename, sizeof(filename), "%s.%d", PGFILES_CRC_FILENAME, worker_num);
 
+	/*
+	 * We open the file for append in case if previous flush already created
+	 * the file.
+	 */
 	file = BasicOpenFile(filename, O_CREAT | O_WRONLY | O_APPEND | PG_BINARY);
 	if (file <= 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", filename)));
 
-	rc = write(file, pgfiles_crc_buf->data, pgfiles_crc_buf->len);
-	if (rc < 0 || rc != pgfiles_crc_buf->len)
+	pgfiles_size = sizeof(PGFilesHashEntry) * workers_pgfiles_len[worker_num];
+	size_written = write(file, GET_WORKER_PGFILES(worker_num), pgfiles_size);
+	if (size_written < 0 || size_written != pgfiles_size)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write file \"%s\": %m", filename)));
@@ -1039,30 +1107,21 @@ flush_pgfiles_hash(int worker_num)
 
 	close(file);
 
-	pfree(pgfiles_crc_buf->data);
-	pfree(pgfiles_crc_buf);
-	pgfiles_crc_buf = NULL;
-
-	hash_destroy(pgfiles_hash);
-	pgfiles_hash = NULL;
-
-	/* This worker flushed the hash */
-	pg_atomic_fetch_sub_u32(&workers_ctl->pgFilesFlushCnt, 1);
+	workers_pgfiles_len[worker_num] = 0;
 }
 
 /*
- * Check if a PGDATA file changed since last checkpoint.  If pgdata_hash wasn't
- * initialize before initialize it.
- *
- * Returns false if the file didn't change.
+ * Check if a PGDATA file changed since last checkpoint and return
+ * PGFilesHashEntry.  If pgfiles_hash wasn't initialize before initialize it.
  */
-static bool
+static PGFilesHashEntry
 check_pgfile_changed(const char *filename, Pointer new_data, uint64 size)
 {
-	uint64		prev_crc = 0;
-	uint64		cur_crc;
-	Size		filenamelen,
-				datalen;
+	PGFilesHashEntry *prev_entry = NULL;
+	PGFilesHashEntry new_entry;
+	pg_cryptohash_ctx *ctx;
+	uint8		checksumbuf[PG_SHA256_DIGEST_LENGTH];
+	char		checksumstringbuf[PG_SHA256_DIGEST_STRING_LENGTH];
 
 	if (pgfiles_hash == NULL)
 		pgfiles_hash = init_pgfiles_hash();
@@ -1070,33 +1129,34 @@ check_pgfile_changed(const char *filename, Pointer new_data, uint64 size)
 	if (pgfiles_hash != NULL)
 	{
 		char		key[MAXPGPATH];
-		PGDataHashEntry *entry;
 
 		MemSet(key, 0, sizeof(key));
 		strncpy(key, filename, MAXPGPATH);
 
-		entry = (PGDataHashEntry *) hash_search(pgfiles_hash, key, HASH_FIND, NULL);
-		if (entry != NULL)
-			prev_crc = entry->crc;
+		prev_entry = (PGFilesHashEntry *) hash_search(pgfiles_hash, key, HASH_FIND, NULL);
 	}
 
-	cur_crc = hash_bytes_extended((const unsigned char *) new_data, size, 0);
-
-	if (pgfiles_crc_buf == NULL)
+	ctx = pg_cryptohash_create(PG_SHA256);
+	if (pg_cryptohash_init(ctx) < 0 ||
+		pg_cryptohash_update(ctx, (uint8 *) new_data, size) < 0 ||
+		pg_cryptohash_final(ctx, checksumbuf, sizeof(checksumbuf)) < 0)
 	{
-		pgfiles_crc_buf = makeStringInfo();
-		/* Remember this worker for flushing */
-		pg_atomic_fetch_add_u32(&workers_ctl->pgFilesFlushCnt, 1);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("failed to calculate checksum of the file \"%s\"",
+						filename)));
 	}
+	pg_cryptohash_free(ctx);
 
-	/* Prepare the new checksum to be written to the file */
-	filenamelen = strlen(filename);
-	datalen = filenamelen + 1 /* null-byte */ + sizeof(cur_crc) + 1 /* null-byte */ ;
-	appendBinaryStringInfoNT(pgfiles_crc_buf, &datalen, sizeof(datalen));
-	appendBinaryStringInfo(pgfiles_crc_buf, filename, filenamelen);
-	appendStringInfoChar(pgfiles_crc_buf, '\0');
-	appendBinaryStringInfo(pgfiles_crc_buf, &cur_crc, sizeof(cur_crc));
-	appendStringInfoChar(pgfiles_crc_buf, '\0');
+	hex_encode((char *) checksumbuf, sizeof checksumbuf, checksumstringbuf);
+	checksumstringbuf[PG_SHA256_DIGEST_STRING_LENGTH - 1] = '\0';
 
-	return prev_crc != cur_crc;
+	MemSet(&new_entry, 0, sizeof(new_entry));
+
+	strncpy(new_entry.filename, filename, sizeof(new_entry.filename));
+	strncpy(new_entry.hash, checksumstringbuf, sizeof(new_entry.hash));
+	new_entry.changed = (strncmp(prev_entry->hash, new_entry.hash,
+								 sizeof(new_entry.hash)) != 0);
+
+	return new_entry;
 }
