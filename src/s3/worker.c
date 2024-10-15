@@ -16,23 +16,18 @@
 #include "orioledb.h"
 
 #include "btree/io.h"
+#include "s3/hash.h"
 #include "s3/headers.h"
 #include "s3/queue.h"
 #include "s3/requests.h"
 #include "s3/worker.h"
 
 #include "access/xlog_internal.h"
-#include "common/hashfn.h"
-#include "common/sha2.h"
-#include "common/string.h"
-#include "lib/stringinfo.h"
-#include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/bgwriter.h"
 #include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
-#include "storage/fd.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/sinvaladt.h"
@@ -43,7 +38,6 @@
 #include "utils/timeout.h"
 
 #include "pgstat.h"
-#include "utils/wait_event.h"
 
 #include "openssl/sha.h"
 #include <sys/fcntl.h>
@@ -59,27 +53,15 @@ typedef struct S3WorkerCtl
 	ConditionVariable pgFilesFlushedCV;
 } S3WorkerCtl;
 
-typedef struct PGFilesHashEntry
-{
-	char		filename[MAXPGPATH];
-	char		hash[PG_SHA256_DIGEST_STRING_LENGTH];
-	bool		changed;	/* true if crc changed since last checkpoint */
-} PGFilesHashEntry;
-
 static volatile sig_atomic_t shutdown_requested = false;
 static volatile S3TaskLocation *workers_locations = NULL;
-static PGFilesHashEntry *workers_pgfiles = NULL;
+static S3FileHash *workers_pgfiles = NULL;
 static volatile uint32 *workers_pgfiles_len = NULL;
 
 static S3WorkerCtl *workers_ctl = NULL;
-static HTAB *pgfiles_hash = NULL;
+static S3HashState *hash_state = NULL;
 
 static int worker_num;
-
-static HTAB *init_pgfiles_hash(void);
-static void flush_pgfiles_hash(void);
-static PGFilesHashEntry check_pgfile_changed(const char *filename,
-											 Pointer new_data, uint64 size);
 
 Size
 s3_workers_shmem_needs(void)
@@ -92,7 +74,7 @@ s3_workers_shmem_needs(void)
 	size = add_size(size,
 					CACHELINEALIGN(mul_size(sizeof(uint32), s3_num_workers)));
 	size = add_size(size,
-					CACHELINEALIGN(mul_size(sizeof(PGFilesHashEntry),
+					CACHELINEALIGN(mul_size(sizeof(S3FileHash),
 											s3_num_workers * WORKERS_PGFILES_SIZE)));
 
 	return size;
@@ -112,7 +94,7 @@ s3_workers_init_shmem(Pointer ptr, bool found)
 	workers_pgfiles_len = (uint32 *) ptr;
 	ptr += CACHELINEALIGN(mul_size(sizeof(uint32), s3_num_workers));
 
-	workers_pgfiles = (PGFilesHashEntry *) ptr;
+	workers_pgfiles = (S3FileHash *) ptr;
 
 	if (!found)
 	{
@@ -191,6 +173,8 @@ s3_workers_checkpoint_init(void)
 	for (int i = 0; i < s3_num_workers; i++)
 	{
 		char		worker_filename[MAXPGPATH];
+
+		workers_pgfiles_len[i] = 0;
 
 		snprintf(worker_filename, sizeof(worker_filename), "%s.%d",
 				 PGFILES_CRC_FILENAME, i);
@@ -275,18 +259,24 @@ s3_workers_checkpoint_finish(void)
 	}
 }
 
-static PGFilesHashEntry *
+static S3FileHash *
 get_worker_pgfiles(int worker_num)
 {
 	return workers_pgfiles + WORKERS_PGFILES_SIZE * worker_num;
 }
 
 static void
-put_worker_pgfiles_entry(int worker_num, PGFilesHashEntry *entry)
+flush_pgfiles_hash(int worker_num)
 {
-	memcpy(get_worker_pgfiles(worker_num) + workers_pgfiles_len[worker_num],
-		   entry, sizeof(PGFilesHashEntry));
-	workers_pgfiles_len[worker_num] += 1;
+	char		filename[MAXPGPATH];
+
+	Assert(workers_pgfiles_len[worker_num] > 0);
+	Assert(hash_state != NULL);
+
+	snprintf(filename, MAXPGPATH, "%s.%d", PGFILES_CRC_FILENAME, worker_num);
+
+	flushS3PGFilesHash(hash_state, filename);
+	workers_pgfiles_len[worker_num] = 0;
 }
 
 /*
@@ -547,20 +537,26 @@ s3process_task(uint64 taskLocation)
 
 		if (data != NULL)
 		{
-			PGFilesHashEntry entry;
+			S3FileHash *entry;
 
-			entry = check_pgfile_changed(filename, data, size);
+			if (hash_state == NULL)
+				hash_state = makeS3HashState(get_worker_pgfiles(worker_num),
+											 WORKERS_PGFILES_SIZE,
+											 PGFILES_CRC_FILENAME);
 
-			if (entry.changed)
+			/* Flush hash entries if the buffer is full */
+			if (workers_pgfiles_len[worker_num] == WORKERS_PGFILES_SIZE)
+				flush_pgfiles_hash(worker_num);
+
+			entry = getS3PGFileHash(hash_state, filename, data, size);
+
+			if (entry->changed)
 				(void) s3_put_object_with_contents(objectname, data, size, false);
 
-			/* Now after all operations above we can safely flush the entry */
-			if (workers_pgfiles_len[worker_num] == WORKERS_PGFILES_SIZE)
-				flush_pgfiles_hash();
-
-			put_worker_pgfiles_entry(worker_num, &entry);
-
 			pfree(data);
+
+			workers_pgfiles_len[worker_num] += 1;
+			Assert(workers_pgfiles_len[worker_num] == hash_state->pgFilesLen);
 		}
 
 		pfree(objectname);
@@ -982,10 +978,10 @@ s3worker_main(Datum main_arg)
 			if (workers_pgfiles_len[worker_num] > 0 &&
 				pg_atomic_read_u32(&workers_ctl->pgFilesCnt) == 0)
 			{
-				flush_pgfiles_hash();
+				flush_pgfiles_hash(worker_num);
 
-				hash_destroy(pgfiles_hash);
-				pgfiles_hash = NULL;
+				freeS3HashState(hash_state);
+				hash_state = NULL;
 
 				ConditionVariableBroadcast(&workers_ctl->pgFilesFlushedCV);
 			}
@@ -1000,155 +996,4 @@ s3worker_main(Datum main_arg)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
-}
-
-/*
- * Initialize a hash table to store checksums of PGDATA files.
- */
-static HTAB *
-init_pgfiles_hash(void)
-{
-	int			file;
-	PGFilesHashEntry entry;
-	Size		readBytes;
-	HASHCTL		ctl;
-	HTAB	   *hash;
-
-	MemSet(&ctl, 0, sizeof(ctl));
-	ctl.keysize = MAXPGPATH;
-	ctl.entrysize = sizeof(PGFilesHashEntry);
-	ctl.hcxt = CurTransactionContext;
-
-	hash = hash_create("pgfiles hash",
-					   32,		/* arbitrary initial size */
-					   &ctl,
-					   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-
-	file = BasicOpenFile(PGFILES_CRC_FILENAME, O_RDONLY | PG_BINARY);
-	if (file < 0)
-	{
-		if (errno == ENOENT)
-			return NULL;
-
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not read file \"%s\": %m", PGFILES_CRC_FILENAME)));
-	}
-
-	while ((readBytes = read(file, (char *) &entry, sizeof(PGFilesHashEntry))) > 0)
-	{
-		PGFilesHashEntry *new_entry;
-		bool		found;
-
-		if (readBytes != sizeof(PGFilesHashEntry))
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not read file \"%s\": %m", PGFILES_CRC_FILENAME)));
-
-		/* Put the filename and its checksum into the hash table */
-		new_entry = (PGFilesHashEntry *) hash_search(hash, entry.filename,
-													 HASH_ENTER, &found);
-		/* Normally we shouldn't have duplicated keys in the file */
-		if (found)
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("the file name is duplicated in the hash file \"%s\": %s",
-							PGFILES_CRC_FILENAME, entry.filename)));
-
-		/* filename is already filled in */
-		strncpy(new_entry->hash, entry.hash, sizeof(entry.hash));
-		new_entry->changed = entry.changed;
-	}
-
-	if (readBytes < 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not read file \"%s\": %m", PGFILES_CRC_FILENAME)));
-
-	close(file);
-
-	return hash;
-}
-
-/*
- * Save current workers' PGDATA files hash into a temporary file.
- */
-static void
-flush_pgfiles_hash(void)
-{
-	char		filename[MAXPGPATH];
-	int			file;
-	Size		pgfiles_size;
-	Size		size_written;
-
-	Assert(workers_pgfiles_len[worker_num] > 0);
-
-	snprintf(filename, sizeof(filename), "%s.%d", PGFILES_CRC_FILENAME, worker_num);
-
-	/*
-	 * We open the file for append in case if previous flush already created
-	 * the file.
-	 */
-	file = BasicOpenFile(filename, O_CREAT | O_WRONLY | O_APPEND | PG_BINARY);
-	if (file <= 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not create file \"%s\": %m", filename)));
-
-	pgfiles_size = sizeof(PGFilesHashEntry) * workers_pgfiles_len[worker_num];
-	size_written = write(file, get_worker_pgfiles(worker_num), pgfiles_size);
-	if (size_written < 0 || size_written != pgfiles_size)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not write file \"%s\": %m", filename)));
-
-	if (pg_fsync(file) != 0)
-		ereport(FATAL,
-				(errcode_for_file_access(),
-				 errmsg("could not fsync file \"%s\": %m", filename)));
-
-	close(file);
-
-	workers_pgfiles_len[worker_num] = 0;
-}
-
-/*
- * Check if a PGDATA file changed since last checkpoint and return
- * PGFilesHashEntry.  If pgfiles_hash wasn't initialize before initialize it.
- */
-static PGFilesHashEntry
-check_pgfile_changed(const char *filename, Pointer new_data, uint64 size)
-{
-	PGFilesHashEntry *prev_entry = NULL;
-	PGFilesHashEntry new_entry;
-	unsigned char hashbuf[PG_SHA256_DIGEST_LENGTH];
-	char		hashstringbuf[PG_SHA256_DIGEST_STRING_LENGTH];
-
-	if (pgfiles_hash == NULL)
-		pgfiles_hash = init_pgfiles_hash();
-
-	if (pgfiles_hash != NULL)
-	{
-		char		key[MAXPGPATH];
-
-		MemSet(key, 0, sizeof(key));
-		strncpy(key, filename, MAXPGPATH);
-
-		prev_entry = (PGFilesHashEntry *) hash_search(pgfiles_hash, key, HASH_FIND, NULL);
-	}
-
-	(void) SHA256((unsigned char *) new_data, size, hashbuf);
-
-	hex_encode((char *) hashbuf, sizeof(hashbuf), hashstringbuf);
-	hashstringbuf[PG_SHA256_DIGEST_STRING_LENGTH - 1] = '\0';
-
-	MemSet(&new_entry, 0, sizeof(new_entry));
-
-	strncpy(new_entry.filename, filename, sizeof(new_entry.filename));
-	strncpy(new_entry.hash, hashstringbuf, sizeof(new_entry.hash));
-
-	new_entry.changed = (prev_entry == NULL) ||
-		(strncmp(prev_entry->hash, new_entry.hash, sizeof(new_entry.hash)) != 0);
-
-	return new_entry;
 }
