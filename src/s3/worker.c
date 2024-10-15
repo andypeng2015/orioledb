@@ -22,7 +22,6 @@
 #include "s3/worker.h"
 
 #include "access/xlog_internal.h"
-#include "common/cryptohash.h"
 #include "common/hashfn.h"
 #include "common/sha2.h"
 #include "common/string.h"
@@ -46,23 +45,12 @@
 #include "pgstat.h"
 #include "utils/wait_event.h"
 
+#include "openssl/sha.h"
 #include <sys/fcntl.h>
 #include <unistd.h>
 
 
 #define WORKERS_PGFILES_SIZE 50
-
-#define GET_WORKER_PGFILES(worker_num) \
-	(workers_pgfiles + WORKERS_PGFILES_SIZE * (worker_num))
-
-#define PUT_WORKER_PGFILES_ENTRY(worker_num, entry) \
-	do { \
-		memcpy(GET_WORKER_PGFILES(worker_num) + \
-			   sizeof(PGFilesHashEntry) * workers_pgfiles_len[worker_num], \
-			   (entry), \
-			   sizeof(PGFilesHashEntry)); \
-		workers_pgfiles_len[worker_num] += 1; \
-	} while(0)
 
 typedef struct S3WorkerCtl
 {
@@ -285,6 +273,20 @@ s3_workers_checkpoint_finish(void)
 
 		unlink(worker_filename);
 	}
+}
+
+static PGFilesHashEntry *
+get_worker_pgfiles(int worker_num)
+{
+	return workers_pgfiles + WORKERS_PGFILES_SIZE * worker_num;
+}
+
+static void
+put_worker_pgfiles_entry(int worker_num, PGFilesHashEntry *entry)
+{
+	memcpy(get_worker_pgfiles(worker_num) + workers_pgfiles_len[worker_num],
+		   entry, sizeof(PGFilesHashEntry));
+	workers_pgfiles_len[worker_num] += 1;
 }
 
 /*
@@ -556,7 +558,7 @@ s3process_task(uint64 taskLocation)
 			if (workers_pgfiles_len[worker_num] == WORKERS_PGFILES_SIZE)
 				flush_pgfiles_hash();
 
-			PUT_WORKER_PGFILES_ENTRY(worker_num, &entry);
+			put_worker_pgfiles_entry(worker_num, &entry);
 
 			pfree(data);
 		}
@@ -1094,7 +1096,7 @@ flush_pgfiles_hash(void)
 				 errmsg("could not create file \"%s\": %m", filename)));
 
 	pgfiles_size = sizeof(PGFilesHashEntry) * workers_pgfiles_len[worker_num];
-	size_written = write(file, GET_WORKER_PGFILES(worker_num), pgfiles_size);
+	size_written = write(file, get_worker_pgfiles(worker_num), pgfiles_size);
 	if (size_written < 0 || size_written != pgfiles_size)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -1119,9 +1121,8 @@ check_pgfile_changed(const char *filename, Pointer new_data, uint64 size)
 {
 	PGFilesHashEntry *prev_entry = NULL;
 	PGFilesHashEntry new_entry;
-	pg_cryptohash_ctx *ctx;
-	uint8		checksumbuf[PG_SHA256_DIGEST_LENGTH];
-	char		checksumstringbuf[PG_SHA256_DIGEST_STRING_LENGTH];
+	unsigned char hashbuf[PG_SHA256_DIGEST_LENGTH];
+	char		hashstringbuf[PG_SHA256_DIGEST_STRING_LENGTH];
 
 	if (pgfiles_hash == NULL)
 		pgfiles_hash = init_pgfiles_hash();
@@ -1136,27 +1137,18 @@ check_pgfile_changed(const char *filename, Pointer new_data, uint64 size)
 		prev_entry = (PGFilesHashEntry *) hash_search(pgfiles_hash, key, HASH_FIND, NULL);
 	}
 
-	ctx = pg_cryptohash_create(PG_SHA256);
-	if (pg_cryptohash_init(ctx) < 0 ||
-		pg_cryptohash_update(ctx, (uint8 *) new_data, size) < 0 ||
-		pg_cryptohash_final(ctx, checksumbuf, sizeof(checksumbuf)) < 0)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("failed to calculate checksum of the file \"%s\"",
-						filename)));
-	}
-	pg_cryptohash_free(ctx);
+	(void) SHA256((unsigned char *) new_data, size, hashbuf);
 
-	hex_encode((char *) checksumbuf, sizeof checksumbuf, checksumstringbuf);
-	checksumstringbuf[PG_SHA256_DIGEST_STRING_LENGTH - 1] = '\0';
+	hex_encode((char *) hashbuf, sizeof(hashbuf), hashstringbuf);
+	hashstringbuf[PG_SHA256_DIGEST_STRING_LENGTH - 1] = '\0';
 
 	MemSet(&new_entry, 0, sizeof(new_entry));
 
 	strncpy(new_entry.filename, filename, sizeof(new_entry.filename));
-	strncpy(new_entry.hash, checksumstringbuf, sizeof(new_entry.hash));
-	new_entry.changed = (strncmp(prev_entry->hash, new_entry.hash,
-								 sizeof(new_entry.hash)) != 0);
+	strncpy(new_entry.hash, hashstringbuf, sizeof(new_entry.hash));
+
+	new_entry.changed = (prev_entry == NULL) ||
+		(strncmp(prev_entry->hash, new_entry.hash, sizeof(new_entry.hash)) != 0);
 
 	return new_entry;
 }
