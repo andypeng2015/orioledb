@@ -20,13 +20,13 @@ typedef struct S3FilesHash
 {
 	char		filename[MAXPGPATH];
 	char		hash[PG_SHA256_DIGEST_STRING_LENGTH];
-	bool		changed;	/* true if crc changed since last checkpoint */
+	int			changed;	/* true if crc changed since last checkpoint */
 } S3FileHash;
 
 typedef struct S3HashState
 {
 	HTAB	   *hashTable;
-	S3FileHash *pgFiles;
+	S3FileHash *pgFiles;	/* Buffer of S3FilesHash entries */
 	uint32		pgFilesSize;
 	uint32		pgFilesLen;
 } S3HashState;
