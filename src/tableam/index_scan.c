@@ -180,7 +180,7 @@ switch_to_next_range(OIndexDescr *indexDescr, OScanState *ostate,
 	{
 		if (ostate->curKeyRangeIsLoaded)
 		{
-			result = _bt_start_prim_scan(scan, ForwardScanDirection);
+			result = _bt_advance_array_keys_increment(scan, ForwardScanDirection);
 			elog(LOG, "_bt_start_prim_scan, result %u:", result);
 			if(result)
 			{
@@ -192,7 +192,7 @@ switch_to_next_range(OIndexDescr *indexDescr, OScanState *ostate,
 		{
 			_bt_start_array_keys(scan, ForwardScanDirection);
 			elog(LOG, "_bt_start_array_keys");
-			result = false;
+			result = true;
 		}
 	}
 	else
