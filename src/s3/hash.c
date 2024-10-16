@@ -127,7 +127,7 @@ initS3PGFilesHash(S3HashState *state, const char *filename)
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("invalid line format the hash file \"%s\": %s",
+					 errmsg("invalid line format of the hash file \"%s\": %s",
 							filename, buf.data)));
 	}
 

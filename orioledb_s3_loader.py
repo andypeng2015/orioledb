@@ -8,10 +8,9 @@ import struct
 import testgres
 
 from botocore.config import Config
-from botocore.exceptions import ParamValidationError
+from botocore.exceptions import ClientError, ParamValidationError
 from concurrent.futures import ThreadPoolExecutor
 from boto3.s3.transfer import TransferConfig
-from botocore.exceptions import ClientError
 from threading import Event
 from typing import Callable
 from urllib.parse import urlparse
@@ -116,7 +115,6 @@ class OrioledbS3ObjectLoader:
 		self.s3 = s3_client
 
 	def run(self):
-		wal_dir = os.path.join(self.data_dir, 'pg_wal')
 		chkp_num = self.last_checkpoint_number(self.bucket_name)
 		self.download_files_in_directory(self.bucket_name,
 		                                 'data/',
@@ -354,6 +352,60 @@ class OrioledbS3ObjectLoader:
 					executor.shutdown(wait=False, cancel_futures=True)
 					break
 
+
+	def download_unchanged_files(self,
+								 bucket_name: str,
+								 pgfiles_hash_name: str,
+								 chkp_num: int):
+		# We won't be able to download unchanged previous files if this is
+		# the first checkpoint
+		if chkp_num <= 1:
+			return
+
+		prev_chkp_num = chkp_num - 1
+		prev_chkp_dir = os.path.join(self.prefix, "data", str(prev_chkp_num))
+
+		local_path = os.path.join(self.data_dir, pgfiles_hash_name)
+
+		pgfiles = self.get_pgfiles_hash(local_path)
+		pgfiles_missed = 0
+		for pgfile in pgfiles:
+			# Ignore changed files
+			if pgfile["changed"] == 1:
+				continue
+
+			try:
+				remote_file = os.path.join(prev_chkp_dir, pgfile["filename"])
+				local_file = os.path.join(self.data_dir, pgfile["filename"])
+
+				self.download_file(bucket_name, remote_file, local_file)
+			except ClientError as err:
+				if err.response['Error']['Code'] == "404":
+					pgfiles_missed += 1
+				else:
+					raise err
+
+		# Recursively
+		# - Read pgfiles.crc and determine unchanged files
+		# - Download unchaged files from previous checkpoint
+		# - Do again all steps for previous checkpoint
+
+
+	def get_pgfiles_hash(self, pgfiles_hash_name: str):
+		res = []
+
+		pattern_str = r"^FILE: (?P<filename>.+), HASH: (?P<hash>.+), CHANGED: (?P<changed>\d+)$"
+		pattern = re.compile(pattern_str)
+		with open(pgfiles_hash_name) as file:
+			for line in file:
+				m = pattern.search(line)
+
+				if m is None or len(m.groups()) != 3:
+					raise Exception(f"Invalid line format of the hash file {pgfiles_hash_name}: {line}")
+
+				res.append(m.groupdict())
+
+		return res
 
 def get_control_data(data_dir: str):
 	"""
