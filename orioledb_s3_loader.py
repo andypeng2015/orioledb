@@ -128,6 +128,10 @@ class OrioledbS3ObjectLoader:
 		                                 transform=self.transform_orioledb,
 		                                 filter=self.filter_orioledb)
 
+		self.download_unchanged_files(
+		    self.bucket_name, os.path.join("orioledb_data", "pgfiles.crc"),
+		    chkp_num, None)
+
 		control = get_control_data(self.data_dir)
 		orioledb_control = get_orioledb_control_data(self.data_dir)
 		self.download_undo(orioledb_control['undoRegularStartLocation'],
@@ -352,11 +356,9 @@ class OrioledbS3ObjectLoader:
 					executor.shutdown(wait=False, cancel_futures=True)
 					break
 
-
-	def download_unchanged_files(self,
-								 bucket_name: str,
-								 pgfiles_hash_name: str,
-								 chkp_num: int):
+	def download_unchanged_files(self, bucket_name: str, pgfiles_name: str,
+	                             chkp_num: int,
+	                             pgfiles: list[dict[str, str]] | None):
 		# We won't be able to download unchanged previous files if this is
 		# the first checkpoint
 		if chkp_num <= 1:
@@ -365,47 +367,62 @@ class OrioledbS3ObjectLoader:
 		prev_chkp_num = chkp_num - 1
 		prev_chkp_dir = os.path.join(self.prefix, "data", str(prev_chkp_num))
 
-		local_path = os.path.join(self.data_dir, pgfiles_hash_name)
+		if pgfiles is None:
+			pgfiles_path = os.path.join(self.data_dir, pgfiles_name)
+			pgfiles = self.get_pgfiles_hash(pgfiles_path)
 
-		pgfiles = self.get_pgfiles_hash(local_path)
-		pgfiles_missed = 0
+		prev_pgfiles = []
 		for pgfile in pgfiles:
 			# Ignore changed files
-			if pgfile["changed"] == 1:
+			if int(pgfile["checkpoint"]) == chkp_num:
 				continue
 
-			try:
-				remote_file = os.path.join(prev_chkp_dir, pgfile["filename"])
-				local_file = os.path.join(self.data_dir, pgfile["filename"])
+			if int(pgfile["checkpoint"]) > chkp_num:
+				raise Exception(f"Unexpected checkpoint number {pgfile}")
 
-				self.download_file(bucket_name, remote_file, local_file)
-			except ClientError as err:
-				if err.response['Error']['Code'] == "404":
-					pgfiles_missed += 1
-				else:
-					raise err
+			# This file needs to be downloaded from pre-previous checkpoint
+			if int(pgfile["checkpoint"]) < prev_chkp_num:
+				prev_pgfiles.append(pgfile)
+				continue
 
-		# Recursively
-		# - Read pgfiles.crc and determine unchanged files
-		# - Download unchaged files from previous checkpoint
-		# - Do again all steps for previous checkpoint
+			remote_file = os.path.join(prev_chkp_dir, pgfile["filename"])
+			local_file = os.path.join(self.data_dir, pgfile["filename"])
 
+			self.download_file(bucket_name, remote_file, local_file)
+
+		# Some files are still missing
+		if len(prev_pgfiles) > 0:
+			remote_pgfiles_path = os.path.join(prev_chkp_dir, pgfiles_name)
+			temp_pgfiles_path = os.path.join(
+			    self.data_dir, f"{pgfiles_name}.{prev_chkp_num}")
+
+			self.download_file(bucket_name, remote_pgfiles_path,
+			                   temp_pgfiles_path)
+
+			# Recursively download unchanged files
+			self.download_unchanged_files(bucket_name, pgfiles_name,
+			                              prev_chkp_num, prev_pgfiles)
+
+			os.unlink(temp_pgfiles_path)
 
 	def get_pgfiles_hash(self, pgfiles_hash_name: str):
 		res = []
 
-		pattern_str = r"^FILE: (?P<filename>.+), HASH: (?P<hash>.+), CHANGED: (?P<changed>\d+)$"
+		pattern_str = r"^FILE: (?P<filename>.+), HASH: (?P<hash>.+), CHECKPOINT: (?P<checkpoint>\d+)$"
 		pattern = re.compile(pattern_str)
 		with open(pgfiles_hash_name) as file:
 			for line in file:
 				m = pattern.search(line)
 
 				if m is None or len(m.groups()) != 3:
-					raise Exception(f"Invalid line format of the hash file {pgfiles_hash_name}: {line}")
+					raise Exception(
+					    f"Invalid line format of the hash file {pgfiles_hash_name}: {line}"
+					)
 
 				res.append(m.groupdict())
 
 		return res
+
 
 def get_control_data(data_dir: str):
 	"""

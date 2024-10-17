@@ -209,9 +209,9 @@ class S3Test(S3BaseTest):
 		""")
 
 		test_1_filepath = node.execute(
-			"SELECT pg_catalog.pg_relation_filepath('test_1'::regclass)")[0][0]
+		    "SELECT pg_catalog.pg_relation_filepath('test_1'::regclass)")[0][0]
 		test_2_filepath = node.execute(
-			"SELECT pg_catalog.pg_relation_filepath('test_2'::regclass)")[0][0]
+		    "SELECT pg_catalog.pg_relation_filepath('test_2'::regclass)")[0][0]
 
 		node.safe_psql("CHECKPOINT")
 

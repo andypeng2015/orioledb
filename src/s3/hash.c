@@ -31,12 +31,14 @@ static void initS3PGFilesHash(S3HashState *state, const char *filename);
  * responsible to release the buffer.
  */
 S3HashState *
-makeS3HashState(S3FileHash *pgFiles, uint32 pgFilesSize, const char *hashFilename)
+makeS3HashState(uint32 checkpointNumber, S3FileHash *pgFiles, uint32 pgFilesSize,
+				const char *hashFilename)
 {
 	S3HashState *res;
 
 	res = (S3HashState *) palloc(sizeof(S3HashState));
 	res->hashTable = NULL;
+	res->checkpointNumber = checkpointNumber;
 	res->pgFiles = pgFiles;
 	res->pgFilesSize = pgFilesSize;
 	res->pgFilesLen = 0;
@@ -100,8 +102,8 @@ initS3PGFilesHash(S3HashState *state, const char *filename)
 	{
 		S3FileHash	fileEntry;
 
-		if (sscanf(buf.data, "FILE: %1023[^,], HASH: %64[^,], CHANGED: %d",
-				   fileEntry.filename, fileEntry.hash, &fileEntry.changed) == 3)
+		if (sscanf(buf.data, "FILE: %1023[^,], HASH: %64[^,], CHECKPOINT: %d",
+				   fileEntry.filename, fileEntry.hash, &fileEntry.checkpointNumber) == 3)
 		{
 			char		key[MAXPGPATH];
 			S3FileHash *newEntry;
@@ -109,6 +111,12 @@ initS3PGFilesHash(S3HashState *state, const char *filename)
 
 			MemSet(key, 0, sizeof(key));
 			strlcpy(key, fileEntry.filename, sizeof(key));
+
+			if (fileEntry.checkpointNumber >= state->checkpointNumber)
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("unexpected checkpoint number in the hash file \"%s\": %s",
+								filename, buf.data)));
 
 			/* Put the filename and its checksum into the hash table */
 			newEntry = (S3FileHash *) hash_search(state->hashTable,
@@ -118,11 +126,12 @@ initS3PGFilesHash(S3HashState *state, const char *filename)
 				ereport(ERROR,
 						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 						 errmsg("the file name is duplicated in the hash file \"%s\": %s",
-								filename, fileEntry.filename)));
+								filename, buf.data)));
 
 			/* filename is already filled in */
 			strlcpy(newEntry->hash, fileEntry.hash, sizeof(fileEntry.hash));
-			newEntry->changed = fileEntry.changed;
+			newEntry->checkpointNumber = fileEntry.checkpointNumber;
+			newEntry->changed = false;
 		}
 		else
 			ereport(ERROR,
@@ -163,9 +172,9 @@ flushS3PGFilesHash(S3HashState *state, const char *filename)
 
 	for (int i = 0; i < state->pgFilesLen; i++)
 	{
-		if (fprintf(file, "FILE: %s, HASH: %s, CHANGED: %d\n",
+		if (fprintf(file, "FILE: %s, HASH: %s, CHECKPOINT: %u\n",
 					state->pgFiles[i].filename, state->pgFiles[i].hash,
-					state->pgFiles[i].changed) < 0)
+					state->pgFiles[i].checkpointNumber) < 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not write file \"%s\": %m",
@@ -219,8 +228,10 @@ getS3PGFileHash(S3HashState *state, const char *filename,
 	strlcpy(newEntry->hash, hashstringbuf, sizeof(newEntry->hash));
 
 	newEntry->changed = ((prevEntry == NULL) ||
-		(strncmp(prevEntry->hash, newEntry->hash, sizeof(newEntry->hash)) != 0))
-		? 1 : 0;
+		(strncmp(prevEntry->hash, newEntry->hash, sizeof(newEntry->hash)) != 0)) ?
+		1 : 0;
+	newEntry->checkpointNumber = (newEntry->changed) ?
+		state->checkpointNumber : prevEntry->checkpointNumber;
 
 	/* Store new entry into the hash state */
 	if (state->pgFilesLen >= state->pgFilesSize)

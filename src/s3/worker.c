@@ -540,9 +540,12 @@ s3process_task(uint64 taskLocation)
 			S3FileHash *entry;
 
 			if (hash_state == NULL)
-				hash_state = makeS3HashState(get_worker_pgfiles(worker_num),
+				hash_state = makeS3HashState(task->typeSpecific.writePGFile.chkpNum,
+											 get_worker_pgfiles(worker_num),
 											 WORKERS_PGFILES_SIZE,
 											 PGFILES_CRC_FILENAME);
+
+			Assert(hash_state->checkpointNumber == task->typeSpecific.writePGFile.chkpNum);
 
 			/* Flush hash entries if the buffer is full */
 			if (workers_pgfiles_len[worker_num] == WORKERS_PGFILES_SIZE)

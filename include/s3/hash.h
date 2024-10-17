@@ -20,18 +20,21 @@ typedef struct S3FilesHash
 {
 	char		filename[MAXPGPATH];
 	char		hash[PG_SHA256_DIGEST_STRING_LENGTH];
-	int			changed;	/* true if crc changed since last checkpoint */
+	bool		changed;	/* true if crc changed since last checkpoint */
+	uint32		checkpointNumber;
 } S3FileHash;
 
 typedef struct S3HashState
 {
 	HTAB	   *hashTable;
+	uint32		checkpointNumber;
 	S3FileHash *pgFiles;	/* Buffer of S3FilesHash entries */
 	uint32		pgFilesSize;
 	uint32		pgFilesLen;
 } S3HashState;
 
-extern S3HashState *makeS3HashState(S3FileHash *pgFiles, uint32 pgFilesSize,
+extern S3HashState *makeS3HashState(uint32 checkpointNumber,
+									S3FileHash *pgFiles, uint32 pgFilesSize,
 									const char *hashFilename);
 extern void freeS3HashState(S3HashState *state);
 extern void flushS3PGFilesHash(S3HashState *state, const char *filename);
