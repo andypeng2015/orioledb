@@ -61,7 +61,7 @@ static volatile uint32 *workers_pgfiles_len = NULL;
 static S3WorkerCtl *workers_ctl = NULL;
 static S3HashState *hash_state = NULL;
 
-static int worker_num;
+static int	worker_num;
 
 Size
 s3_workers_shmem_needs(void)

@@ -92,7 +92,7 @@ initS3PGFilesHash(S3HashState *state, const char *filename)
 	}
 
 	state->hashTable = hash_create("S3PGFiles hash",
-								   32,		/* arbitrary initial size */
+								   32,	/* arbitrary initial size */
 								   &ctl,
 								   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
@@ -214,7 +214,7 @@ getS3PGFileHash(S3HashState *state, const char *filename,
 		strlcpy(key, filename, MAXPGPATH);
 
 		prevEntry = (S3FileHash *) hash_search(state->hashTable, key,
-												HASH_FIND, NULL);
+											   HASH_FIND, NULL);
 	}
 
 	(void) SHA256((unsigned char *) data, size, hashbuf);
@@ -228,7 +228,7 @@ getS3PGFileHash(S3HashState *state, const char *filename,
 	strlcpy(newEntry->hash, hashstringbuf, sizeof(newEntry->hash));
 
 	newEntry->changed = ((prevEntry == NULL) ||
-		(strncmp(prevEntry->hash, newEntry->hash, sizeof(newEntry->hash)) != 0)) ?
+						 (strncmp(prevEntry->hash, newEntry->hash, sizeof(newEntry->hash)) != 0)) ?
 		1 : 0;
 	newEntry->checkpointNumber = (newEntry->changed) ?
 		state->checkpointNumber : prevEntry->checkpointNumber;
