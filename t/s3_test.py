@@ -219,7 +219,7 @@ class S3Test(S3BaseTest):
 		objects_1 = objects_1.get("Contents", [])
 		objects_1 = sorted(list(x["Key"] for x in objects_1))
 
-		self.assertIn("data/1/orioledb_data/pgfiles.crc", objects_1)
+		self.assertIn("data/1/orioledb_data/pg_files.crc", objects_1)
 		self.assertIn("data/1/" + test_1_filepath, objects_1)
 		self.assertIn("data/1/" + test_2_filepath, objects_1)
 
@@ -233,7 +233,7 @@ class S3Test(S3BaseTest):
 		objects_2 = objects_2.get("Contents", [])
 		objects_2 = sorted(list(x["Key"] for x in objects_2))
 
-		self.assertIn("data/2/orioledb_data/pgfiles.crc", objects_2)
+		self.assertIn("data/2/orioledb_data/pg_files.crc", objects_2)
 		self.assertNotIn("data/2/" + test_1_filepath, objects_2)
 		self.assertIn("data/2/" + test_2_filepath, objects_2)
 

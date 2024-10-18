@@ -44,7 +44,7 @@
 #include <unistd.h>
 
 
-#define WORKERS_PGFILES_SIZE 50
+#define WORKERS_PGFILES_SIZE 100
 
 typedef struct S3WorkerCtl
 {

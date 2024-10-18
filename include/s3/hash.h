@@ -16,7 +16,7 @@
 #include "common/sha2.h"
 #include "utils/hsearch.h"
 
-typedef struct S3FilesHash
+typedef struct S3FileHash
 {
 	char		filename[MAXPGPATH];
 	char		hash[PG_SHA256_DIGEST_STRING_LENGTH];

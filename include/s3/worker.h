@@ -74,7 +74,7 @@ typedef struct
 	}			typeSpecific;
 } S3Task;
 
-#define PGFILES_CRC_FILENAME		ORIOLEDB_DATA_DIR "/pgfiles.crc"
+#define PGFILES_CRC_FILENAME		ORIOLEDB_DATA_DIR "/pg_files.crc"
 
 extern Size s3_workers_shmem_needs(void);
 extern void s3_workers_init_shmem(Pointer ptr, bool found);

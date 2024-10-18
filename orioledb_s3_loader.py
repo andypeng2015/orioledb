@@ -129,7 +129,7 @@ class OrioledbS3ObjectLoader:
 		                                 filter=self.filter_orioledb)
 
 		self.download_unchanged_files(
-		    self.bucket_name, os.path.join("orioledb_data", "pgfiles.crc"),
+		    self.bucket_name, os.path.join("orioledb_data", "pg_files.crc"),
 		    chkp_num, None)
 
 		control = get_control_data(self.data_dir)
