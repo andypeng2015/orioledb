@@ -852,11 +852,11 @@ accumulate_small_file(S3BackupState *state, const char *path, int size)
 			flushS3PGFilesHash(state->hashState, PGSMALLFILES_CRC_TMP_FILENAME);
 
 		entry = getS3PGFileHash(state->hashState, path, data, dataSize);
-	
+
 		/*
 		 * If the file didn't change just exit the function and return 0.  We
-		 * could return maxLocation here, but it might be better to a caller to
-		 * decide.
+		 * could return maxLocation here, but it might be better to a caller
+		 * to decide.
 		 */
 		if (!entry->changed)
 		{
@@ -866,7 +866,7 @@ accumulate_small_file(S3BackupState *state, const char *path, int size)
 
 		pfree(data);
 	}
-	
+
 	/* The file changed, put it into the smallFileNames list */
 
 	if (state->smallFilesTotalSize + sizeRequired > SMALL_FILES_TOTAL_THRESHOLD)
