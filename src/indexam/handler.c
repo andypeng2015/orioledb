@@ -848,7 +848,7 @@ orioledb_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
 				Node	   *other_operand = (Node *) lsecond(saop->args);
 #if PG_VERSION_NUM >= 170000
-				int                     alength = estimate_array_length(root, other_operand);
+				int			alength = estimate_array_length(root, other_operand);
 #else
 				int			alength = estimate_array_length(other_operand);
 #endif
@@ -1230,7 +1230,7 @@ static int
 get_num_prefix_exact_keys(ScanKey scankey, int nscankeys)
 {
 	AttrNumber	prevAttr = 0;
-	int		i;
+	int			i;
 
 	for (i = 0; i < nscankeys; i++)
 	{
