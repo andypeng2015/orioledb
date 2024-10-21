@@ -132,6 +132,11 @@ class OrioledbS3ObjectLoader:
 		    self.bucket_name, os.path.join("orioledb_data", "pg_files.crc"),
 		    chkp_num, None)
 
+		self.download_unchanged_small_files(
+		    self.bucket_name,
+		    os.path.join("orioledb_data", "pg_small_files.crc"), chkp_num,
+		    None)
+
 		control = get_control_data(self.data_dir)
 		orioledb_control = get_orioledb_control_data(self.data_dir)
 		self.download_undo(orioledb_control['undoRegularStartLocation'],
@@ -249,7 +254,7 @@ class OrioledbS3ObjectLoader:
 			if not exist_ok or not os.path.isdir(name):
 				raise
 
-	def download_file(self, bucket_name, file_key, local_path):
+	def download_file(self, bucket_name, file_key, local_path) -> bool:
 		try:
 			transfer_config = TransferConfig(use_threads=False,
 			                                 max_concurrency=1)
@@ -293,6 +298,9 @@ class OrioledbS3ObjectLoader:
 			else:
 				print(f"An error occurred: {e}")
 			self._error_occurred.set()
+			return False
+
+		return True
 
 	def transform_orioledb(self, val: str) -> str:
 		offset = 0
@@ -358,7 +366,7 @@ class OrioledbS3ObjectLoader:
 
 	def download_unchanged_files(self, bucket_name: str, pgfiles_name: str,
 	                             chkp_num: int,
-	                             pgfiles: list[dict[str, str]] | None):
+	                             pgfiles: dict[str, str] | None):
 		# We won't be able to download unchanged previous files if this is
 		# the first checkpoint
 		if chkp_num <= 1:
@@ -369,24 +377,21 @@ class OrioledbS3ObjectLoader:
 
 		if pgfiles is None:
 			pgfiles_path = os.path.join(self.data_dir, pgfiles_name)
-			pgfiles = self.get_pgfiles_hash(pgfiles_path)
+			pgfiles = self.get_unchanged_pgfiles(pgfiles_path, chkp_num)
 
-		prev_pgfiles = []
-		for pgfile in pgfiles:
+		prev_pgfiles = {}
+		for filename, checkpoint in pgfiles.items():
 			# Ignore changed files
-			if int(pgfile["checkpoint"]) == chkp_num:
+			if int(checkpoint) == chkp_num:
 				continue
-
-			if int(pgfile["checkpoint"]) > chkp_num:
-				raise Exception(f"Unexpected checkpoint number {pgfile}")
 
 			# This file needs to be downloaded from pre-previous checkpoint
-			if int(pgfile["checkpoint"]) < prev_chkp_num:
-				prev_pgfiles.append(pgfile)
+			if int(checkpoint) < prev_chkp_num:
+				prev_pgfiles[filename] = checkpoint
 				continue
 
-			remote_file = os.path.join(prev_chkp_dir, pgfile["filename"])
-			local_file = os.path.join(self.data_dir, pgfile["filename"])
+			remote_file = os.path.join(prev_chkp_dir, filename)
+			local_file = os.path.join(self.data_dir, filename)
 
 			self.download_file(bucket_name, remote_file, local_file)
 
@@ -405,8 +410,101 @@ class OrioledbS3ObjectLoader:
 
 			os.unlink(temp_pgfiles_path)
 
-	def get_pgfiles_hash(self, pgfiles_hash_name: str):
-		res = []
+	def download_unchanged_small_files(self, bucket_name: str,
+	                                   pgfiles_name: str, chkp_num: int,
+	                                   pgfiles: dict[str, str] | None):
+		# We won't be able to download unchanged previous files if this is
+		# the first checkpoint
+		if chkp_num <= 1:
+			return
+
+		prev_chkp_num = chkp_num - 1
+		prev_chkp_dir = os.path.join(self.prefix, "data", str(prev_chkp_num))
+
+		if pgfiles is None:
+			pgfiles_path = os.path.join(self.data_dir, pgfiles_name)
+			pgfiles = self.get_unchanged_pgfiles(pgfiles_path, chkp_num)
+
+		if len(pgfiles) == 0:
+			return
+
+		small_files_num = 0
+		files_restored = 0
+		while True:
+			small_filename = os.path.join("orioledb_data",
+			                              f"small_files_{small_files_num}")
+			remote_path = os.path.join(prev_chkp_dir, small_filename)
+			temp_path = os.path.join(self.data_dir,
+			                         f"{small_filename}.{prev_chkp_num}")
+
+			# Looks like the file doesn't exist, break
+			if not self.download_file(bucket_name, remote_path, temp_path):
+				break
+
+			with open(temp_path, 'rb') as file:
+				data = file.read()
+				numFiles = struct.unpack('i', data[0:4])[0]
+
+				for i in range(0, numFiles):
+					(nameOffset, dataOffset,
+					 dataLength) = struct.unpack('iii',
+					                             data[4 + i * 12:16 + i * 12])
+
+					name = data[nameOffset:data.find(b'\0', nameOffset
+					                                 )].decode('ascii')
+					fullname = os.path.join(self.data_dir, name)
+
+					if not name in pgfiles:
+						continue
+
+					if self.verbose:
+						print(f"{remote_path} -> {fullname}", flush=True)
+
+					self.makedirs(os.path.dirname(fullname),
+					              exist_ok=True,
+					              mode=0o700)
+
+					with open(fullname, 'wb') as file:
+						file.write(data[dataOffset:dataOffset + dataLength])
+					os.chmod(fullname, 0o600)
+
+					files_restored += 1
+					# Looks like we restored all unchanged files, break
+					if files_restored == len(pgfiles):
+						break
+
+			os.unlink(temp_path)
+			small_files_num += 1
+
+			# Looks like we restored all unchanged files, break
+			if files_restored == len(pgfiles):
+				break
+
+		# Not all files were restored, check the previous checkpoint recursively
+		if files_restored < len(pgfiles):
+			remote_pgfiles_path = os.path.join(prev_chkp_dir, pgfiles_name)
+			temp_pgfiles_path = os.path.join(
+			    self.data_dir, f"{pgfiles_name}.{prev_chkp_num}")
+
+			self.download_file(bucket_name, remote_pgfiles_path,
+			                   temp_pgfiles_path)
+
+			prev_pgfiles = {}
+			for filename, checkpoint in pgfiles:
+				if int(checkpoint) < prev_chkp_num:
+					prev_pgfiles[filename] = checkpoint
+
+			assert len(prev_pgfiles) > 0
+
+			# Recursively download unchanged small files
+			self.download_unchanged_small_files(bucket_name, pgfiles_name,
+			                                    prev_chkp_num, prev_pgfiles)
+
+			os.unlink(temp_pgfiles_path)
+
+	def get_unchanged_pgfiles(self, pgfiles_hash_name: str,
+	                          chkp_num: int) -> dict[str, str]:
+		res = {}
 
 		pattern_str = r"^FILE: (?P<filename>.+), HASH: (?P<hash>.+), CHECKPOINT: (?P<checkpoint>\d+)$"
 		pattern = re.compile(pattern_str)
@@ -419,7 +517,13 @@ class OrioledbS3ObjectLoader:
 					    f"Invalid line format of the hash file {pgfiles_hash_name}: {line}"
 					)
 
-				res.append(m.groupdict())
+				line_dict = m.groupdict()
+
+				if int(line_dict["checkpoint"]) > chkp_num:
+					raise Exception(f'Unexpected checkpoint number "{line}"')
+
+				if int(line_dict["checkpoint"]) < chkp_num:
+					res[line_dict["filename"]] = line_dict["checkpoint"]
 
 		return res
 
