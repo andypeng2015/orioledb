@@ -108,6 +108,7 @@ static object_access_hook_type old_objectaccess_hook = NULL;
 List	   *drop_index_list = NIL;
 List	   *partition_drop_index_list = NIL;
 static List *alter_type_exprs = NIL;
+static List *o_alter_generated_column_id = NIL;
 Oid			o_saved_relrewrite = InvalidOid;
 Oid			o_saved_reltablespace = InvalidOid;
 List	   *o_reuse_indices = NIL;
@@ -1019,6 +1020,9 @@ orioledb_utility_command(PlannedStmt *pstmt,
 						case AT_SetStatistics:
 						case AT_SetUnLogged:
 						case AT_ValidateConstraint:
+#if PG_VERSION_NUM >= 170000
+						case AT_SetExpression:
+#endif
 							break;
 						case AT_DropOids:
 							ereport(WARNING,
@@ -1036,9 +1040,6 @@ orioledb_utility_command(PlannedStmt *pstmt,
 									(errcode(ERRCODE_SYNTAX_ERROR),
 									 errmsg("changing access method is not supported for OrioleDB tables")));
 							break;
-#if PG_VERSION_NUM >= 170000
-						case AT_SetExpression:
-#endif
 						case AT_SetCompression:
 						default:
 							ereport(ERROR,
@@ -2181,7 +2182,13 @@ rewrite_table(Relation rel, OTable *old_o_table, OTable *new_o_table)
 				expr = defaultexpr;
 			}
 
-			if (!expr && attr->attgenerated && old_slot->tts_isnull[i])
+			/*
+			 * Build new value for GENERATED column if calculating formula has
+			 * been updated using ALTER TABLE ... SET EXPRESSION ... or if
+			 * value was not present in existing row
+			 */
+			if (!expr && attr->attgenerated && (old_slot->tts_isnull[i] ||
+												(o_alter_generated_column_id != NIL && list_member_int(o_alter_generated_column_id, i + 1))))
 			{
 				Node	   *defaultexpr = build_column_default(rel, i + 1);
 
@@ -2250,6 +2257,9 @@ rewrite_table(Relation rel, OTable *old_o_table, OTable *new_o_table)
 		ExecClearTuple(old_slot);
 		ExecClearTuple(new_slot);
 	}
+
+	list_free(o_alter_generated_column_id);
+	o_alter_generated_column_id = NIL;
 
 	ExecDropSingleTupleTableSlot(old_slot);
 	ExecDropSingleTupleTableSlot(new_slot);
@@ -3324,6 +3334,17 @@ orioledb_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 							in_rewrite = true;
 					}
 
+					/*
+					 * Alter table on generated column triggers table rewrite
+					 * due to need of recalculating column value for existing
+					 * rows
+					 */
+					if (old_field.generated)
+					{
+						in_rewrite = true;
+						o_alter_generated_column_id = lappend_int(o_alter_generated_column_id, subId);
+					}
+
 					if (!in_rewrite)
 					{
 						orioledb_save_collation(field->collation);
@@ -4131,5 +4152,6 @@ o_ddl_cleanup(void)
 	memset(&o_pkey_result, 0, sizeof(o_pkey_result));
 	o_saved_relrewrite = InvalidOid;
 	in_rewrite = false;
+	o_alter_generated_column_id = NIL;
 	o_in_add_column = false;
 }
